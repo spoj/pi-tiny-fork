@@ -9,17 +9,17 @@ import {
 	replayCompatibleMessages,
 } from "../src/replay.ts";
 
-const sol = "github-copilot/openai-responses/gpt-5.6-sol";
-const luna = "github-copilot/openai-responses/gpt-5.6-luna";
-const other = "github-copilot/openai-responses/grok-4.6";
+const sol = "github-copilot/gpt-5.6-sol";
+const luna = "github-copilot/gpt-5.6-luna";
+const other = "github-copilot/grok-4.6";
 
-function assistant(model: string) {
-	const [provider, api, id] = model.split("/");
+function assistant(model: string, api = "openai-responses") {
+	const slash = model.indexOf("/");
 	return {
 		role: "assistant" as const,
-		provider,
-		api: `${api}/${id}`.replace(/\/[^/]+$/, ""),
-		model: id,
+		provider: model.slice(0, slash),
+		api,
+		model: model.slice(slash + 1),
 		content: [{ type: "text" as const, text: "hello" }],
 		usage: {} as never,
 		stopReason: "stop" as const,
@@ -53,15 +53,44 @@ describe("compatible replay", () => {
 		expect(canReplay(sol, other, families)).toBe(false);
 	});
 
-	it("rewrites compatible assistant provenance and leaves other messages alone", () => {
-		const source = assistant(sol);
-		const user = { role: "user" as const, content: "question", timestamp: 1 };
+	it("rewrites compatible provenance to the target's actual API", () => {
+		const source = assistant(sol, "openai-completions");
 		const target = { provider: "github-copilot", api: "openai-responses", id: "gpt-5.6-luna" };
 		const [rewritten] = replayCompatibleMessages([source], target, [new Set([sol, luna])]);
 
 		expect(modelIdentity(rewritten)).toBe(luna);
-		expect(rewritten.content).toEqual(source.content);
-		expect(replayCompatibleMessages([source], { ...target, id: "grok-4.6" }, [new Set([sol, luna])])).toEqual([source]);
-		expect(user).toEqual({ role: "user", content: "question", timestamp: 1 });
+		expect(rewritten.api).toBe(target.api);
+		expect(rewritten.content).toBe(source.content);
+		expect(replayCompatibleMessages([source], { ...target, id: "grok-4.6" }, [new Set([sol, luna])])[0]).toBe(source);
+	});
+
+	it("rewrites an API change for the same model only when listed in a family", () => {
+		const source = assistant(sol, "openai-completions");
+		const target = { provider: "github-copilot", api: "openai-responses", id: "gpt-5.6-sol" };
+		const [rewritten] = replayCompatibleMessages([source], target, [new Set([sol, luna])]);
+
+		expect(rewritten).toEqual({ ...source, api: target.api });
+		expect(rewritten).not.toBe(source);
+		expect(replayCompatibleMessages([source], target, [new Set([luna, other])])[0]).toBe(source);
+		expect(replayCompatibleMessages([source], target, [])[0]).toBe(source);
+	});
+
+	it("leaves already matching provenance untouched", () => {
+		const source = assistant(sol);
+		const target = { provider: source.provider, api: source.api, id: source.model };
+		expect(replayCompatibleMessages([source], target, [new Set([sol, luna])])[0]).toBe(source);
+	});
+
+	it("preserves slashes in model IDs and distinguishes providers", () => {
+		const source = assistant("gateway/vendor/source-model", "openai-completions");
+		const target = { provider: "another-gateway", api: "anthropic-messages", id: "vendor/target-model" };
+		const targetIdentity = "another-gateway/vendor/target-model";
+		const families = [new Set(["gateway/vendor/source-model", targetIdentity])];
+		const [rewritten] = replayCompatibleMessages([source], target, families);
+
+		expect(modelIdentity(source)).toBe("gateway/vendor/source-model");
+		expect(modelIdentity(rewritten)).toBe(targetIdentity);
+		expect(rewritten).toEqual({ ...source, provider: target.provider, api: target.api, model: target.id });
+		expect(replayCompatibleMessages([source], { ...target, provider: "unlisted-gateway" }, families)[0]).toBe(source);
 	});
 });

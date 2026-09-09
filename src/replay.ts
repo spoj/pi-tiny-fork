@@ -7,8 +7,8 @@ type Settings = {
 	replayCompatibleModels?: unknown;
 };
 
-export function modelIdentity(message: Pick<AssistantMessage, "provider" | "api" | "model">): string {
-	return `${message.provider}/${message.api}/${message.model}`;
+export function modelIdentity(message: Pick<AssistantMessage, "provider" | "model">): string {
+	return `${message.provider}/${message.model}`;
 }
 
 export function loadCompatibleModelFamilies(settingsPath = join(getAgentDir(), "settings.json")): Set<string>[] {
@@ -37,10 +37,10 @@ export function replayCompatibleMessages(
 	target: Pick<Model<any>, "provider" | "api" | "id">,
 	families: Set<string>[],
 ): AssistantMessage[] {
-	const targetIdentity = `${target.provider}/${target.api}/${target.id}`;
+	const targetIdentity = `${target.provider}/${target.id}`;
 	return messages.map((message) => {
 		const sourceIdentity = modelIdentity(message);
-		if (sourceIdentity === targetIdentity || !canReplay(sourceIdentity, targetIdentity, families)) return message;
+		if ((sourceIdentity === targetIdentity && message.api === target.api) || !canReplay(sourceIdentity, targetIdentity, families)) return message;
 		return {
 			...message,
 			provider: target.provider,

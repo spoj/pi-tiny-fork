@@ -41,7 +41,7 @@ When a child settles, the parent immediately receives its status, ID, transcript
 
 ## Context replay
 
-The package contains a separate `replay` extension. It is package-wide: it runs for ordinary Pi sessions as well as fork sessions, even when no fork tool is used. It always uses compatible mode and reads families from the top-level `replayCompatibleModels` setting in `~/.pi/agent/settings.json`:
+The package contains a separate `replay` extension. It is package-wide: it runs for ordinary Pi sessions as well as fork sessions, even when no fork tool is used. It always uses compatible mode and reads families of standard `provider/model` IDs from the top-level `replayCompatibleModels` setting in `~/.pi/agent/settings.json`:
 
 ```json
 {
@@ -49,14 +49,16 @@ The package contains a separate `replay` extension. It is package-wide: it runs 
   "defaultForkThinkingLevel": "xhigh",
   "replayCompatibleModels": [
     [
-      "github-copilot/openai-responses/gpt-5.6-sol",
-      "github-copilot/openai-responses/gpt-5.6-luna"
+      "github-copilot/gpt-5.6-sol",
+      "github-copilot/gpt-5.6-luna"
     ]
   ]
 }
 ```
 
-Assistant-message provenance is rewritten only within a configured family. Pi remains responsible for converting the resulting transcript into the target provider's request format.
+Each family declares replay compatibility across the listed models and their APIs. Matching uses `provider/model`; compatible assistant messages are rewritten to the target's actual provider, API, and model. This also covers an API change for the same listed model. Unlisted models are untouched. Pi remains responsible for converting the resulting transcript into the target provider's request format.
+
+When updating from three-part entries, remove the API segment from each configured ID. Model IDs can themselves contain slashes; preserve those. Three-part entries are not interpreted as a separate format.
 
 ## Install
 
