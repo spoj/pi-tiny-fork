@@ -53,8 +53,8 @@ describe("compatible replay", () => {
 		expect(canReplay(sol, other, families)).toBe(false);
 	});
 
-	it("rewrites compatible provenance to the target's actual API", () => {
-		const source = assistant(sol, "openai-completions");
+	it("rewrites compatible provenance within the same API", () => {
+		const source = assistant(sol, "openai-responses");
 		const target = { provider: "github-copilot", api: "openai-responses", id: "gpt-5.6-luna" };
 		const [rewritten] = replayCompatibleMessages([source], target, [new Set([sol, luna])]);
 
@@ -64,14 +64,32 @@ describe("compatible replay", () => {
 		expect(replayCompatibleMessages([source], { ...target, id: "grok-4.6" }, [new Set([sol, luna])])[0]).toBe(source);
 	});
 
-	it("rewrites an API change for the same model only when listed in a family", () => {
+	it("leaves messages from another API for pi's own conversion", () => {
+		const source = assistant(sol, "openai-completions");
+		const target = { provider: "github-copilot", api: "openai-responses", id: "gpt-5.6-luna" };
+		const [untouched] = replayCompatibleMessages([source], target, [new Set([sol, luna])]);
+
+		expect(untouched).toBe(source);
+		expect(replayCompatibleMessages([source], { ...target, id: "grok-4.6" }, [new Set([sol, luna])])[0]).toBe(source);
+	});
+
+	it("keeps foreign reasoning metadata when the API changes", () => {
+		const source = {
+			...assistant(sol, "openai-completions"),
+			content: [{ type: "thinking" as const, thinking: "plan", thinkingSignature: "foreign-signature" }],
+		};
+		const target = { provider: "github-copilot", api: "openai-responses", id: "gpt-5.6-luna" };
+		const [untouched] = replayCompatibleMessages([source], target, [new Set([sol, luna])]);
+
+		expect(untouched).toBe(source);
+		expect(untouched.content).toEqual([{ type: "thinking", thinking: "plan", thinkingSignature: "foreign-signature" }]);
+	});
+
+	it("leaves an API change for the same model untouched even when listed in a family", () => {
 		const source = assistant(sol, "openai-completions");
 		const target = { provider: "github-copilot", api: "openai-responses", id: "gpt-5.6-sol" };
-		const [rewritten] = replayCompatibleMessages([source], target, [new Set([sol, luna])]);
 
-		expect(rewritten).toEqual({ ...source, api: target.api });
-		expect(rewritten).not.toBe(source);
-		expect(replayCompatibleMessages([source], target, [new Set([luna, other])])[0]).toBe(source);
+		expect(replayCompatibleMessages([source], target, [new Set([sol, luna])])[0]).toBe(source);
 		expect(replayCompatibleMessages([source], target, [])[0]).toBe(source);
 	});
 
@@ -83,14 +101,14 @@ describe("compatible replay", () => {
 
 	it("preserves slashes in model IDs and distinguishes providers", () => {
 		const source = assistant("gateway/vendor/source-model", "openai-completions");
-		const target = { provider: "another-gateway", api: "anthropic-messages", id: "vendor/target-model" };
+		const target = { provider: "another-gateway", api: "openai-completions", id: "vendor/target-model" };
 		const targetIdentity = "another-gateway/vendor/target-model";
 		const families = [new Set(["gateway/vendor/source-model", targetIdentity])];
 		const [rewritten] = replayCompatibleMessages([source], target, families);
 
 		expect(modelIdentity(source)).toBe("gateway/vendor/source-model");
 		expect(modelIdentity(rewritten)).toBe(targetIdentity);
-		expect(rewritten).toEqual({ ...source, provider: target.provider, api: target.api, model: target.id });
+		expect(rewritten).toEqual({ ...source, provider: target.provider, model: target.id });
 		expect(replayCompatibleMessages([source], { ...target, provider: "unlisted-gateway" }, families)[0]).toBe(source);
 	});
 });

@@ -39,12 +39,14 @@ export function replayCompatibleMessages(
 ): AssistantMessage[] {
 	const targetIdentity = `${target.provider}/${target.id}`;
 	return messages.map((message) => {
+		// Cross-API payloads keep their foreign identity so pi's own conversion still strips
+		// provider-specific reasoning and tool-call metadata instead of treating it as native.
+		if (message.api !== target.api) return message;
 		const sourceIdentity = modelIdentity(message);
-		if ((sourceIdentity === targetIdentity && message.api === target.api) || !canReplay(sourceIdentity, targetIdentity, families)) return message;
+		if (sourceIdentity === targetIdentity || !canReplay(sourceIdentity, targetIdentity, families)) return message;
 		return {
 			...message,
 			provider: target.provider,
-			api: target.api,
 			model: target.id,
 		};
 	});

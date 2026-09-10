@@ -67,7 +67,7 @@ The package contains a separate `replay` extension. It is package-wide: it runs 
 }
 ```
 
-Each family declares replay compatibility across the listed models and their APIs. Matching uses `provider/model`; compatible assistant messages are rewritten to the target's actual provider, API, and model. This also covers an API change for the same listed model. Unlisted models are untouched. Pi remains responsible for converting the resulting transcript into the target provider's request format.
+Each family declares replay compatibility across the listed models. Matching uses `provider/model`; compatible assistant messages are rewritten to the target's provider and model only when they use the same API as the target. Messages from another API are left untouched, so Pi's normal conversion still strips foreign reasoning signatures and tool-call metadata. Unlisted models are untouched.
 
 When updating from three-part entries, remove the API segment from each configured ID. Model IDs can themselves contain slashes; preserve those. Three-part entries are not interpreted as a separate format.
 
