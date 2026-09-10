@@ -305,6 +305,36 @@ describe("fork manager", () => {
 		await expect(starting).rejects.toThrow("prompt failed");
 	});
 
+	it("ignores child events after the fork settles", async () => {
+		const manager = createManager();
+		await manager.start(context, "work", "full", launchOptions, "call-1");
+		const child = mocks.children[0];
+
+		child.emit({ type: "agent_settled" });
+		child.emit({ type: "turn_start" });
+		child.emit({
+			type: "message_end",
+			message: { role: "assistant", content: [{ type: "text", text: "late" }], stopReason: "stop" },
+		});
+
+		expect(manager.list()[0]).toMatchObject({ status: "completed", turns: 0 });
+		expect(manager.list()[0]).not.toHaveProperty("lastOutput");
+	});
+
+	it("keeps a settled result when a startup failure follows the child's exit", async () => {
+		const settled: ForkSnapshot[] = [];
+		mocks.promptError = new Error("prompt failed");
+		mocks.exitBeforePromptError = true;
+		const manager = createManager(settled);
+
+		await expect(manager.start(context, "work", "full", launchOptions, "call-1")).rejects.toThrow("Could not start");
+
+		expect(settled).toHaveLength(1);
+		expect(settled[0]).toMatchObject({ status: "failed", error: "Process exited with 0" });
+		mocks.children[0].emit({ type: "turn_start" });
+		expect(manager.list()[0]).toMatchObject({ status: "failed", error: "Process exited with 0", turns: 0 });
+	});
+
 	it("reports a startup failure exactly once", async () => {
 		const settled: ForkSnapshot[] = [];
 		mocks.startError = new Error("startup failed");

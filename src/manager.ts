@@ -180,9 +180,11 @@ export class ForkManager {
 				fork.cleanup ??= fork.child.stop().catch(() => undefined);
 				await fork.cleanup;
 			}
-			fork.stopRequested = false;
-			this.fail(fork, errorText(error));
-			if (!this.shuttingDown) this.settle(fork);
+			if (!fork.settled) {
+				fork.stopRequested = false;
+				this.fail(fork, errorText(error));
+				if (!this.shuttingDown) this.settle(fork);
+			}
 			throw new Error(`Could not start ${fork.id}: ${errorText(error)}`);
 		}
 	}
@@ -198,7 +200,7 @@ export class ForkManager {
 
 	private eventListener(fork: ForkRecord): ChildEventListener {
 		return (event) => {
-			if (this.shuttingDown) return;
+			if (this.shuttingDown || fork.settled || fork.stopRequested) return;
 			switch (event.type) {
 				case "turn_start":
 					fork.turns++;
@@ -218,16 +220,14 @@ export class ForkManager {
 					}
 					break;
 				case "agent_settled":
-					if (!fork.stopRequested && !fork.settled) {
-						if (fork.lastStopReason === "error" || fork.lastStopReason === "aborted") {
-							fork.status = "failed";
-							fork.error = fork.error ?? "Fork stopped with an error";
-						} else {
-							fork.status = "completed";
-						}
-						fork.activity = undefined;
-						this.settle(fork);
+					if (fork.lastStopReason === "error" || fork.lastStopReason === "aborted") {
+						fork.status = "failed";
+						fork.error = fork.error ?? "Fork stopped with an error";
+					} else {
+						fork.status = "completed";
 					}
+					fork.activity = undefined;
+					this.settle(fork);
 					break;
 			}
 			this.options.onUpdate();
