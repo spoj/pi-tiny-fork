@@ -6,7 +6,7 @@ A tiny Pi extension for running asynchronous child sessions from a stable fork p
 
 The model-facing surface is intentionally fixed:
 
-- `Fork({ task, cwd, model, thinkingLevel })` starts a child and returns immediately with its ID, transcript path, and PID. The fields are `task: string`, `cwd: string | null`, `model: string | null`, and `thinkingLevel: ThinkingLevel | null`. Null `model` and `thinkingLevel` use their dedicated `defaultFork*` settings; the fork is refused when either value is unavailable.
+- `Fork({ task, context, cwd, model, thinkingLevel })` starts a child and returns after startup with its ID, transcript path, and PID, without waiting for completion. The required fields are `task: string`, `context: "full" | "reference" | "none"`, `cwd: string | null`, `model: string | null`, and `thinkingLevel: ThinkingLevel | null`. Null `model` and `thinkingLevel` use their dedicated `defaultFork*` settings; the fork is refused when either value is unavailable.
 - `ForkSteer({ id, prompt })` steers a running child.
 - `ForkStop({ id })` stops a running child.
 
@@ -19,6 +19,7 @@ There is no model listing, agent selector, wait tool, listing tool, workflow lan
 ```json
 {
   "task": "Implement and test the feature",
+  "context": "full",
   "cwd": "../feature-worktree",
   "model": null,
   "thinkingLevel": null
@@ -35,9 +36,17 @@ Forks do not fall back to model or thinking-level entries persisted in the forke
 
 Children launch without `--model` or `--thinking`. Before sending the first prompt, startup awaits RPC `set_model`, then `set_thinking_level`, so Pi records changes in the child transcript. If either command fails, the fork fails without sending the prompt.
 
-Each child gets a new session file containing the parent session's path up to the current `Fork` call, then receives a new user message wrapped in `<delegated-task>`. The wrapper tells the child to treat inherited history as reference context, execute only the new task, and return a dense internal handoff; an explicit `cwd` also adds a working-directory notice.
+Every call explicitly chooses how to supply the parent conversation:
 
-The extension appends fork-tool and child-role guidance to the system prompt in both parent and child processes. The `<delegated-task>` wrapper is model-facing guidance, not programmatic role detection: `PI_FORK_CHILD=1` marks spawned child processes and is what enforces the child tool restriction. All three tools are registered in both processes with identical schemas; a child rejects them only if the model tries to execute one. This keeps the request surface stable while preventing recursive delegation.
+- `full`: copy the active parent history before the current `Fork` call into the child's new session. Use this for continuation; do not repeat inherited context in the task.
+- `reference`: start a fresh conversation and include a parent-history snapshot path in the task message. The snapshot contains only the active path before the current `Fork` call, not abandoned branches or later parent activity. Use this for focused advice or review; make the task self-contained and let the child consult the snapshot if useful.
+- `none`: start a fresh conversation with only the delegated task and no history snapshot. Use this for independent work with a self-contained task.
+
+Reference snapshots are saved in `references/<child-session-id>.jsonl` under the child session directory. They remain available after the child finishes, and their path is also returned in the tool result details as `referencePath`. All modes require a persisted parent session.
+
+Each child receives a new user message wrapped in `<delegated-task>`. The wrapper tells the child to treat any inherited history as reference material, execute only the new task, and return a concise internal handoff; an explicit `cwd` also adds a working-directory notice. Fresh conversations still use normal Pi tools, settings, and cwd-based instructions.
+
+The extension appends the same fork guidance to the system prompt in parent and child processes, regardless of context mode. The `<delegated-task>` wrapper is model-facing guidance, not programmatic role detection: `PI_FORK_CHILD=1` marks spawned child processes and is what enforces the child tool restriction. All three tools are registered in both processes with identical schemas; a child rejects them only if the model tries to execute one. The extension does not vary its system-prompt guidance or tool schemas by role or context mode. This preserves prefix compatibility for `full` while preventing recursive delegation.
 
 When a child settles, the parent immediately receives its status, ID, transcript path, and final text in a steering message. The parent can inspect the full transcripts with Pi's existing `read` tool. A compact human-only widget shows known child activity.
 

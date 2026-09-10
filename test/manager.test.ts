@@ -134,9 +134,12 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("../src/rpc.ts", () => ({ RpcChild: mocks.FakeRpcChild }));
-vi.mock("../src/fork.ts", () => ({
-	createForkedSession: () => "/tmp/child.jsonl",
-	delegatedTask: (prompt: string, cwd?: string) => (cwd ? `${cwd}: ${prompt}` : prompt),
+vi.mock("../src/fork.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/fork.ts")>(),
+	createForkSession: (_sessionManager: unknown, context: string) => ({
+		transcriptPath: "/tmp/child.jsonl",
+		referencePath: context === "reference" ? "/tmp/references/parent.jsonl" : undefined,
+	}),
 }));
 
 const context = { cwd: "/tmp/parent", sessionManager: {} } as unknown as ExtensionContext;
@@ -163,20 +166,23 @@ describe("fork manager", () => {
 	it("refuses to start without a model or thinking level", async () => {
 		const manager = createManager();
 
-		await expect(manager.start(context, "work", {})).rejects.toThrow(
+		await expect(manager.start(context, "work", "full", {})).rejects.toThrow(
 			"First check which models are available, then ask the user to choose one; do not assume a model",
 		);
-		await expect(manager.start(context, "work", { model: "provider/test" })).rejects.toThrow(
+		await expect(manager.start(context, "work", "full", { model: "provider/test" })).rejects.toThrow(
 			"Fork requires a thinking level: ask the user to choose one",
 		);
 		expect(mocks.children).toHaveLength(0);
 	});
 
-	it("tracks turns, final output, and completion", async () => {
+	it.each(["full", "reference", "none"] as const)("tracks %s context, turns, final output, and completion", async (mode) => {
 		const settled: ForkSnapshot[] = [];
 		const manager = createManager(settled);
-		const started = await manager.start(context, "work", launchOptions);
+		const started = await manager.start(context, "work", mode, launchOptions);
 		const child = mocks.children[0];
+		expect(child.prompts[0]).toContain("work");
+		expect(child.prompts[0].includes("Parent conversation snapshot:")).toBe(mode === "reference");
+		if (mode === "reference") expect(child.prompts[0]).toContain(started.referencePath);
 
 		child.emit({ type: "turn_start" });
 		child.emit({
@@ -197,7 +203,7 @@ describe("fork manager", () => {
 
 	it("does not report stale output after an empty assistant message", async () => {
 		const manager = createManager();
-		await manager.start(context, "work", launchOptions);
+		await manager.start(context, "work", "full", launchOptions);
 		const child = mocks.children[0];
 
 		child.emit({
@@ -219,7 +225,7 @@ describe("fork manager", () => {
 	it("waits for queued operations during shutdown without settling them", async () => {
 		const settled: ForkSnapshot[] = [];
 		const manager = createManager(settled);
-		const started = await manager.start(context, "work", launchOptions);
+		const started = await manager.start(context, "work", "full", launchOptions);
 		let releaseSteer!: () => void;
 		mocks.steerGate = new Promise<void>((resolve) => {
 			releaseSteer = resolve;
@@ -245,7 +251,7 @@ describe("fork manager", () => {
 	it("reports an unexpected child exit as a failure", async () => {
 		const settled: ForkSnapshot[] = [];
 		const manager = createManager(settled);
-		const started = await manager.start(context, "work", launchOptions);
+		const started = await manager.start(context, "work", "full", launchOptions);
 
 		mocks.children[0].exit({ code: 1, signal: null });
 
@@ -266,7 +272,7 @@ describe("fork manager", () => {
 		mocks.promptError = new Error("prompt failed");
 		mocks.exitBeforePromptError = true;
 		const manager = createManager();
-		const starting = manager.start(context, "work", launchOptions);
+		const starting = manager.start(context, "work", "full", launchOptions);
 
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(mocks.children[0].stopCalls).toBe(1);
@@ -286,7 +292,7 @@ describe("fork manager", () => {
 		mocks.startError = new Error("startup failed");
 		const manager = createManager(settled);
 
-		await expect(manager.start(context, "work", launchOptions)).rejects.toThrow("Could not start");
+		await expect(manager.start(context, "work", "full", launchOptions)).rejects.toThrow("Could not start");
 
 		expect(settled).toHaveLength(1);
 		expect(settled[0]).toMatchObject({ status: "failed", error: "startup failed" });
@@ -298,7 +304,7 @@ describe("fork manager", () => {
 	it("stops an active child and settles it once", async () => {
 		const settled: ForkSnapshot[] = [];
 		const manager = createManager(settled);
-		const started = await manager.start(context, "work", launchOptions);
+		const started = await manager.start(context, "work", "full", launchOptions);
 		const child = mocks.children[0];
 
 		const stopped = await manager.stop(started.id);
@@ -311,7 +317,7 @@ describe("fork manager", () => {
 
 	it("stops without waiting for an unresponsive abort request", async () => {
 		const manager = createManager();
-		const started = await manager.start(context, "work", launchOptions);
+		const started = await manager.start(context, "work", "full", launchOptions);
 		const child = mocks.children[0];
 		child.abortHangs = true;
 
@@ -328,7 +334,7 @@ describe("fork manager", () => {
 			releaseStart = resolve;
 		});
 		const manager = createManager();
-		const starting = manager.start(context, "work", launchOptions);
+		const starting = manager.start(context, "work", "full", launchOptions);
 		await Promise.resolve();
 		const child = mocks.children[0];
 
@@ -344,7 +350,7 @@ describe("fork manager", () => {
 
 	it("does not change a completed child to stopped", async () => {
 		const manager = createManager();
-		const started = await manager.start(context, "work", launchOptions);
+		const started = await manager.start(context, "work", "full", launchOptions);
 		mocks.children[0].emit({ type: "agent_settled" });
 
 		await expect(manager.stop(started.id)).rejects.toThrow(`${started.id} is not running`);

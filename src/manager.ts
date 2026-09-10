@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { createForkedSession, delegatedTask } from "./fork.ts";
+import { createForkSession, delegatedTask, type ForkContext } from "./fork.ts";
 import { RpcChild, type ChildEventListener, type ChildExit } from "./rpc.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ForkLaunchOptions } from "./fork-settings.ts";
@@ -10,6 +10,7 @@ export type ForkStatus = "starting" | "running" | "completed" | "failed" | "stop
 export type ForkSnapshot = {
 	id: string;
 	transcriptPath: string;
+	referencePath?: string;
 	pid?: number;
 	status: ForkStatus;
 	activity?: string;
@@ -75,6 +76,7 @@ export class ForkManager {
 	async start(
 		ctx: ExtensionContext,
 		prompt: string,
+		context: ForkContext,
 		launchOptions: ForkLaunchOptions,
 		cwd?: string,
 	): Promise<ForkSnapshot> {
@@ -93,10 +95,10 @@ export class ForkManager {
 		const cwdExplicit = cwd !== undefined;
 		const forkCwd = cwdExplicit ? resolve(ctx.cwd, cwd) : ctx.cwd;
 		const id = newId(this.forks);
-		const transcriptPath = createForkedSession(ctx.sessionManager, cwdExplicit ? forkCwd : undefined, prompt);
+		const files = createForkSession(ctx.sessionManager, context, cwdExplicit ? forkCwd : undefined, prompt);
 		const fork: ForkRecord = {
 			id,
-			transcriptPath,
+			...files,
 			cwd: forkCwd,
 			cwdExplicit,
 			launchOptions,
@@ -169,7 +171,7 @@ export class ForkManager {
 			if (this.shuttingDown) throw new Error("Fork manager is shutting down");
 			fork.status = "running";
 			this.options.onUpdate();
-			await fork.child!.prompt(delegatedTask(prompt, fork.cwdExplicit ? fork.cwd : undefined));
+			await fork.child!.prompt(delegatedTask(prompt, fork.cwdExplicit ? fork.cwd : undefined, fork.referencePath));
 			return this.snapshot(fork);
 		} catch (error) {
 			fork.stopRequested = true;
@@ -275,6 +277,7 @@ export class ForkManager {
 		return {
 			id: fork.id,
 			transcriptPath: fork.transcriptPath,
+			...(fork.referencePath ? { referencePath: fork.referencePath } : {}),
 			...(fork.pid ? { pid: fork.pid } : {}),
 			status: fork.status,
 			...(fork.activity ? { activity: fork.activity } : {}),

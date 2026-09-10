@@ -3,6 +3,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ForkManager, type ForkSnapshot } from "./manager.ts";
+import { FORK_CONTEXTS } from "./fork.ts";
 import {
 	loadForkDefaults,
 	resolveForkOptions,
@@ -12,10 +13,13 @@ import {
 
 const CHILD_PROCESS = process.env.PI_FORK_CHILD === "1";
 const WIDGET_KEY = "pi-tiny-fork";
-const DELEGATION_SYSTEM_PROMPT = `Fork tools: Fork({task, cwd:null, model:null, thinkingLevel:null}) starts a subagent with the full conversation context through the Fork() call, plus task. Do not repeat inherited context. Keep defaults unless an override is clearly necessary. Use ForkSteer to send new context or direction. Having <delegated-task> identifies a forked child; follow that block. If needed, verify with PI_FORK_CHILD=1.`;
+const DELEGATION_SYSTEM_PROMPT = `Fork tools: Fork({task, context, cwd:null, model:null, thinkingLevel:null}) starts a subagent. Choose context: full inherits parent history; reference supplies a searchable snapshot path; none supplies only the task. With full, do not repeat inherited context; otherwise make the task self-contained. Keep model/thinking defaults unless an override is clearly necessary. Use ForkSteer to send new context or direction. Having <delegated-task> identifies a forked child; follow that block. Fork orchestration tools are unavailable inside a child. If needed, verify with PI_FORK_CHILD=1.`;
 
 const forkTool = Type.Object({
 	task: Type.String({ description: "Task sent to the forked child" }),
+	context: StringEnum(FORK_CONTEXTS, {
+		description: "Parent conversation: full inherits history; reference starts fresh with a snapshot path; none starts fresh without parent history",
+	}),
 	cwd: Type.Union([
 		Type.String({
 			description:
@@ -75,7 +79,7 @@ function registerTools(pi: ExtensionAPI, manager: ForkManager): void {
 		name: "Fork",
 		label: "Fork",
 		description:
-			"Starts an asynchronous fork that inherits the caller's context up to the point of delegation. A model and thinking level must be selected explicitly or configured with defaultForkModel and defaultForkThinkingLevel.",
+			"Starts an asynchronous subagent with full, referenced, or no parent conversation. A model and thinking level must be selected explicitly or configured with defaultForkModel and defaultForkThinkingLevel.",
 		parameters: forkTool,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (CHILD_PROCESS) childToolError();
@@ -96,7 +100,7 @@ function registerTools(pi: ExtensionAPI, manager: ForkManager): void {
 					"Fork requires a thinking level: ask the user to choose one or configure defaultForkThinkingLevel; do not assume one.",
 				);
 			}
-			const fork = await manager.start(ctx, params.task, launchOptions, params.cwd ?? undefined);
+			const fork = await manager.start(ctx, params.task, params.context, launchOptions, params.cwd ?? undefined);
 			return {
 				content: [{
 					type: "text",
@@ -107,6 +111,7 @@ function registerTools(pi: ExtensionAPI, manager: ForkManager): void {
 		},
 		renderCall(params, theme) {
 			const options = [
+				`context: ${params.context ?? ""}`,
 				`cwd: ${params.cwd ?? "inherited"}`,
 				`model: ${params.model ?? "default"}`,
 				`thinking: ${params.thinkingLevel ?? "default"}`,

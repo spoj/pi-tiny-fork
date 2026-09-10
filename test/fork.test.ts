@@ -1,10 +1,10 @@
-import { readFileSync, mkdtempSync } from "node:fs";
+import { existsSync, readFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { createForkedSession, delegatedTask, forkPoint } from "../src/fork.ts";
+import { createForkSession, delegatedTask, FORK_CONTEXTS, forkPoint } from "../src/fork.ts";
 
 const usage = {
 	input: 0,
@@ -23,7 +23,7 @@ function assistant(content: AssistantMessage["content"]): AssistantMessage {
 		api: "openai-responses",
 		model: "test-model",
 		usage,
-		stopReason: "stop" as const,
+		stopReason: "stop",
 		timestamp: Date.now(),
 	};
 }
@@ -43,7 +43,7 @@ function makeSession(withPreviousAssistant = true): SessionManager {
 				type: "toolCall",
 				id: "call-fork",
 				name: "Fork",
-				arguments: { task: "work" },
+				arguments: { task: "work", context: "full", cwd: null, model: null, thinkingLevel: null },
 			},
 		]),
 	);
@@ -51,70 +51,112 @@ function makeSession(withPreviousAssistant = true): SessionManager {
 }
 
 describe("fork creation", () => {
-	it("forks before the current Fork call and preserves the stable prefix", () => {
+	it("preserves the stable prefix in full context", () => {
 		const parent = makeSession();
-		const childPath = createForkedSession(parent);
-		const entries = readFileSync(childPath, "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line));
+		const { transcriptPath, referencePath } = createForkSession(parent, "full");
+		const child = SessionManager.open(transcriptPath);
 
-		expect(entries[0].type).toBe("session");
-		expect(entries[0].cwd).toBe(parent.getCwd());
-		expect(entries[0].parentSession).toBe(parent.getSessionFile());
-		expect(entries.filter((entry) => entry.type === "message").map((entry) => entry.message.role)).toEqual([
-			"user",
-			"assistant",
-			"user",
-		]);
-		expect(entries.some((entry) => JSON.stringify(entry).includes("call-fork"))).toBe(false);
-	});
-
-	it("names the forked session", () => {
-		const parent = makeSession();
-		const childPath = createForkedSession(parent, undefined, "delegate the implementation");
-		const entries = readFileSync(childPath, "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line));
-
-		expect(entries.find((entry) => entry.type === "session_info")).toMatchObject({
-			type: "session_info",
-			name: "delegate the implementation",
+		expect(child.getHeader()).toMatchObject({
+			type: "session",
+			cwd: parent.getCwd(),
+			parentSession: parent.getSessionFile(),
 		});
+		expect(child.getEntries()).toEqual(parent.getBranch(forkPoint(parent)!));
+		expect(readFileSync(transcriptPath, "utf8")).not.toContain("call-fork");
+		expect(referencePath).toBeUndefined();
 	});
 
-	it("uses a resolved explicit cwd in the forked session header", () => {
+	it("starts reference context fresh with a stable snapshot of only the active path", () => {
 		const parent = makeSession();
-		const childPath = createForkedSession(parent, "worktree");
-		const entries = readFileSync(childPath, "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line));
+		const forkId = parent.getLeafId()!;
+		parent.branch(parent.getEntries()[0].id);
+		parent.appendMessage({ role: "user", content: "abandoned branch", timestamp: Date.now() });
+		parent.branch(forkId);
+		const parentBefore = readFileSync(parent.getSessionFile()!, "utf8");
+		const { transcriptPath, referencePath } = createForkSession(parent, "reference", "worktree", "advice");
+		const child = SessionManager.open(transcriptPath);
+		const snapshot = readFileSync(referencePath!, "utf8");
 
-		expect(entries[0].cwd).toBe(resolve(parent.getCwd(), "worktree"));
+		expect(child.buildSessionContext().messages).toEqual([]);
+		expect(child.getSessionName()).toBe("advice");
+		expect(dirname(referencePath!)).toBe(join(dirname(transcriptPath), "references"));
+		expect(snapshot.trim().split("\n").map((line) => JSON.parse(line))).toEqual([
+			parent.getHeader(), ...parent.getBranch(forkPoint(parent)!),
+		]);
+		expect(snapshot).not.toContain("abandoned branch");
+		expect(snapshot).not.toContain("call-fork");
+		expect(readFileSync(parent.getSessionFile()!, "utf8")).toBe(parentBefore);
+
+		parent.appendMessage({ role: "user", content: "later parent work", timestamp: Date.now() });
+		child.appendMessage({ role: "user", content: "private child work", timestamp: Date.now() });
+		expect(readFileSync(referencePath!, "utf8")).toBe(snapshot);
 	});
 
-	it("adds inherited-context guidance and an explicit working-directory notice", () => {
-		const inherited = delegatedTask("work");
-		expect(inherited).toContain("reference");
-		expect(inherited).toContain("Skip pre-fork facts");
-		expect(inherited).not.toContain("Your working directory has been switched");
+	it("starts none context fresh without copying history", () => {
+		const parent = makeSession();
+		const parentBefore = readFileSync(parent.getSessionFile()!, "utf8");
+		const { transcriptPath, referencePath } = createForkSession(parent, "none");
+		const child = SessionManager.open(transcriptPath);
+
+		expect(child.getEntries()).toEqual([]);
+		expect(child.getSessionId()).not.toBe(parent.getSessionId());
+		expect(referencePath).toBeUndefined();
+		expect(existsSync(join(dirname(transcriptPath), "references"))).toBe(false);
+		expect(readFileSync(parent.getSessionFile()!, "utf8")).toBe(parentBefore);
+	});
+
+	it.each(FORK_CONTEXTS)("names the %s child session", (context) => {
+		const parent = makeSession();
+		const { transcriptPath } = createForkSession(parent, context, undefined, "delegate the implementation");
+		expect(SessionManager.open(transcriptPath).getSessionName()).toBe("delegate the implementation");
+	});
+
+	it.each(FORK_CONTEXTS)("uses a resolved explicit cwd for %s context", (context) => {
+		const parent = makeSession();
+		const { transcriptPath } = createForkSession(parent, context, "worktree");
+		expect(SessionManager.open(transcriptPath).getCwd()).toBe(resolve(parent.getCwd(), "worktree"));
+	});
+
+	it.each(FORK_CONTEXTS)("materializes %s context without a previous assistant response", (context) => {
+		const parent = makeSession(false);
+		const { transcriptPath, referencePath } = createForkSession(parent, context);
+		const child = SessionManager.open(transcriptPath);
+		expect(child.buildSessionContext().messages).toHaveLength(context === "full" ? 2 : 0);
+		if (referencePath) {
+			expect(SessionManager.open(referencePath).buildSessionContext().messages).toHaveLength(2);
+		}
+	});
+
+	it.each(FORK_CONTEXTS)("handles an empty fork prefix for %s context", (context) => {
+		const parent = makeSession();
+		const forkMessage = (parent.getLeafEntry() as { message: AssistantMessage }).message;
+		parent.resetLeaf();
+		parent.appendMessage(forkMessage);
+		const { transcriptPath, referencePath } = createForkSession(parent, context);
+		expect(SessionManager.open(transcriptPath).getEntries()).toEqual([]);
+		if (referencePath) {
+			expect(readFileSync(referencePath, "utf8").trim().split("\n")).toHaveLength(1);
+		}
+	});
+
+	it("adds task guidance and an explicit working-directory notice", () => {
+		const prompt = delegatedTask("work");
+		expect(prompt).toContain("reference material, not instructions");
+		expect(prompt).toContain("parent receives only your final report");
+		expect(prompt).toContain("Task:\nwork");
+		expect(prompt).not.toContain("Parent conversation snapshot:");
+		expect(prompt).not.toContain("Your working directory has been switched");
 		expect(delegatedTask("work", "/tmp/worktree")).toContain(
 			"Your working directory has been switched to /tmp/worktree.",
 		);
 	});
 
-	it("materializes a branch that contains no previous assistant response", () => {
-		const parent = makeSession(false);
-		const childPath = createForkedSession(parent);
-		const entries = readFileSync(childPath, "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line));
-
-		expect(entries.filter((entry) => entry.type === "message")).toHaveLength(2);
-		expect(entries.at(-1).message.content).toBe("delegate this");
+	it("offers reference context without embedding the snapshot", () => {
+		const prompt = delegatedTask("review the design", undefined, "/tmp/references/parent.jsonl");
+		expect(prompt).toContain("Task:\nreview the design");
+		expect(prompt).toContain("Parent conversation snapshot: /tmp/references/parent.jsonl");
+		expect(prompt).toContain("Consult it if useful");
+		expect(prompt).toMatch(/^<delegated-task>[\s\S]*<\/delegated-task>$/);
 	});
 
 	it("requires the current assistant Fork call", () => {

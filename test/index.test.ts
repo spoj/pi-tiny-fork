@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => {
 	const startCalls: Array<{
 		ctx: unknown;
 		prompt: string;
+		context: string;
 		launchOptions: { model?: string; thinkingLevel?: string };
 		cwd?: string;
 	}> = [];
@@ -23,10 +24,11 @@ const mocks = vi.hoisted(() => {
 		async start(
 			ctx: unknown,
 			prompt: string,
+			context: string,
 			launchOptions: { model?: string; thinkingLevel?: string },
 			cwd?: string,
 		) {
-			startCalls.push({ ctx, prompt, launchOptions, cwd });
+			startCalls.push({ ctx, prompt, context, launchOptions, cwd });
 			return {
 				id: "fork-1",
 				transcriptPath: "/tmp/fork-1.jsonl",
@@ -69,7 +71,7 @@ afterEach(() => {
 });
 
 describe("fork tools", () => {
-	it("exposes task and flat nullable options", async () => {
+	it("requires an explicit context mode alongside nullable launch options", async () => {
 		delete process.env.PI_FORK_CHILD;
 		const { default: piTinyFork } = await import("../src/index.ts");
 		const pi = {
@@ -91,7 +93,8 @@ describe("fork tools", () => {
 		expect(properties).toEqual(
 			expect.objectContaining({ model: expect.any(Object), thinkingLevel: expect.any(Object), cwd: expect.any(Object) }),
 		);
-		expect(forkTool.parameters.required).toEqual(["task", "cwd", "model", "thinkingLevel"]);
+		expect(forkTool.parameters.required).toEqual(["task", "context", "cwd", "model", "thinkingLevel"]);
+		expect(properties.context).toMatchObject({ type: "string", enum: ["full", "reference", "none"] });
 		expect(properties.cwd.anyOf).toEqual(
 			expect.arrayContaining([expect.objectContaining({ type: "string" }), { type: "null" }]),
 		);
@@ -117,7 +120,7 @@ describe("fork tools", () => {
 		piTinyFork(pi as never);
 		const tools = Object.fromEntries(pi.registerTool.mock.calls.map(([tool]) => [tool.name, tool]));
 		const fork = tools.Fork.renderCall(
-			{ task: "inspect rendering", cwd: null, model: null, thinkingLevel: null },
+			{ task: "inspect rendering", context: "reference", cwd: null, model: null, thinkingLevel: null },
 			theme as never,
 			{} as never,
 		);
@@ -130,12 +133,12 @@ describe("fork tools", () => {
 		const rendered = (component: { render: (width: number) => string[] }) =>
 			component.render(200).map((line) => line.trimEnd()).join("\n");
 
-		expect(rendered(fork)).toContain("Fork inspect rendering\ncwd: inherited · model: default · thinking: default");
+		expect(rendered(fork)).toContain("Fork inspect rendering\ncontext: reference · cwd: inherited · model: default · thinking: default");
 		expect(rendered(steer)).toContain("Fork Steer fork-1234\ncheck the tests");
 		expect(rendered(stop)).toContain("Fork Stop fork-1234");
 	});
 
-	it("normalizes null options before starting", async () => {
+	it.each(["full", "reference", "none"])("passes %s context and resolves null launch options", async (context) => {
 		delete process.env.PI_FORK_CHILD;
 		mocks.forkDefaults = { model: "provider/default", thinkingLevel: "high" };
 		const { default: piTinyFork } = await import("../src/index.ts");
@@ -149,7 +152,7 @@ describe("fork tools", () => {
 		const forkTool = pi.registerTool.mock.calls.find(([tool]) => tool.name === "Fork")?.[0];
 		const result = await forkTool.execute(
 			"call-1",
-			{ task: "check defaults", cwd: null, model: null, thinkingLevel: null },
+			{ task: "check defaults", context, cwd: null, model: null, thinkingLevel: null },
 			undefined,
 			undefined,
 			{} as never,
@@ -157,7 +160,7 @@ describe("fork tools", () => {
 
 		expect(result.content[0].text).toContain("PID: 1234");
 		expect(mocks.startCalls).toHaveLength(1);
-		expect(mocks.startCalls[0]).toMatchObject({ prompt: "check defaults", cwd: undefined });
+		expect(mocks.startCalls[0]).toMatchObject({ prompt: "check defaults", context, cwd: undefined });
 		expect(mocks.startCalls[0].launchOptions).toEqual({ model: "provider/default", thinkingLevel: "high" });
 	});
 
@@ -179,13 +182,37 @@ describe("fork tools", () => {
 		await expect(
 			forkTool.execute(
 				"call-1",
-				{ task: "check configuration", cwd: null, model: null, thinkingLevel: null },
+				{ task: "check configuration", context: "full", cwd: null, model: null, thinkingLevel: null },
 				undefined,
 				undefined,
 				{} as never,
 			),
 		).rejects.toThrow(message);
 		expect(mocks.startCalls).toHaveLength(0);
+	});
+
+	it("shares system guidance and tool schemas between parent and children", async () => {
+		const surfaces = [];
+		for (const child of [false, true]) {
+			if (child) process.env.PI_FORK_CHILD = "1";
+			else delete process.env.PI_FORK_CHILD;
+			vi.resetModules();
+			const { default: piTinyFork } = await import("../src/index.ts");
+			const pi = { registerTool: vi.fn(), on: vi.fn(), sendMessage: vi.fn() };
+			piTinyFork(pi as never);
+			const tools = pi.registerTool.mock.calls.map(([tool]) => tool);
+			const beforeStart = pi.on.mock.calls.find(([event]) => event === "before_agent_start")![1];
+			surfaces.push({
+				tools: tools.map(({ name, description, parameters }) => ({ name, description, parameters })),
+				prompt: beforeStart({ systemPrompt: "base" }),
+			});
+			if (child) {
+				for (const tool of tools) {
+					await expect(tool.execute("call", {})).rejects.toThrow("unavailable inside a delegated fork");
+				}
+			}
+		}
+		expect(surfaces[0]).toEqual(surfaces[1]);
 	});
 
 	it("delivers each settled result while sibling forks are still active", async () => {
