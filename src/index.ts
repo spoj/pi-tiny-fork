@@ -24,7 +24,7 @@ const forkTool = Type.Object({
 		Type.Null(),
 	]),
 	model: Type.Union([
-		Type.String({ description: "Model identifier for the fork; null uses defaultForkModel" }),
+		Type.String({ description: "Exact provider/model-id for the fork; null uses defaultForkModel" }),
 		Type.Null(),
 	]),
 	thinkingLevel: Type.Union([

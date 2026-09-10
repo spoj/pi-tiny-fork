@@ -95,10 +95,12 @@ export class RpcChild {
 
 	async start(): Promise<void> {
 		if (this.process) throw new Error("Child process already started");
+		const separator = this.options.model?.indexOf("/") ?? -1;
+		if (this.options.model && (separator < 1 || separator === this.options.model.length - 1)) {
+			throw new Error("Fork model must be an exact provider/model-id");
+		}
 
 		const args = ["--mode", "rpc", "--session", this.sessionFile];
-		if (this.options.model) args.push("--model", this.options.model);
-		if (this.options.thinkingLevel) args.push("--thinking", this.options.thinkingLevel);
 		const invocation = piInvocation(args);
 		const child = spawn(invocation.command, invocation.args, {
 			cwd: this.cwd,
@@ -134,6 +136,17 @@ export class RpcChild {
 		if (result.error) {
 			this.process = undefined;
 			throw new Error(`Could not start fork: ${result.error.message}`);
+		}
+
+		if (this.options.model) {
+			await this.request({
+				type: "set_model",
+				provider: this.options.model.slice(0, separator),
+				modelId: this.options.model.slice(separator + 1),
+			});
+		}
+		if (this.options.thinkingLevel) {
+			await this.request({ type: "set_thinking_level", level: this.options.thinkingLevel });
 		}
 	}
 

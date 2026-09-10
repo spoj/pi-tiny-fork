@@ -31,7 +31,9 @@ Fork model and thinking-level selection follows this order independently:
 2. The corresponding `defaultForkModel` or `defaultForkThinkingLevel` in `~/.pi/agent/settings.json`.
 3. The fork is refused when either value is unavailable.
 
-Forks do not fall back to model or thinking-level entries persisted in the forked session or to Pi's ordinary defaults.
+Forks do not fall back to model or thinking-level entries persisted in the forked session or to Pi's ordinary defaults. Both `model` and `defaultForkModel` require an exact `provider/model-id`; bare names, fuzzy matching, and thinking-level suffixes are not supported. Model IDs may contain slashes.
+
+Children launch without `--model` or `--thinking`. Before sending the first prompt, startup awaits RPC `set_model`, then `set_thinking_level`, so Pi records changes in the child transcript. If either command fails, the fork fails without sending the prompt.
 
 Each child gets a new session file containing the parent session's path up to the current `Fork` call, then receives a new user message wrapped in `<delegated-task>`. The wrapper tells the child to treat inherited history as reference context, execute only the new task, and return a dense internal handoff; an explicit `cwd` also adds a working-directory notice.
 
