@@ -95,7 +95,7 @@ export class ForkManager {
 		const cwdExplicit = cwd !== undefined;
 		const forkCwd = cwdExplicit ? resolve(ctx.cwd, cwd) : ctx.cwd;
 		const id = newId(this.forks);
-		const files = createForkSession(ctx.sessionManager, context, cwdExplicit ? forkCwd : undefined, prompt);
+		const files = createForkSession(ctx.sessionManager, context, forkCwd, prompt);
 		const fork: ForkRecord = {
 			id,
 			...files,

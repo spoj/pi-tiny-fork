@@ -85,6 +85,7 @@ const mocks = vi.hoisted(() => {
 	}
 
 	const children: FakeRpcChild[] = [];
+	const sessionCalls: Array<{ context: string; cwd: string; name?: string }> = [];
 	let startGate: Promise<void> | undefined;
 	let steerGate: Promise<void> | undefined;
 	let startError: Error | undefined;
@@ -93,6 +94,7 @@ const mocks = vi.hoisted(() => {
 	let stopGate: Promise<void> | undefined;
 	return {
 		children,
+		sessionCalls,
 		FakeRpcChild,
 		get startGate() {
 			return startGate;
@@ -136,10 +138,13 @@ const mocks = vi.hoisted(() => {
 vi.mock("../src/rpc.ts", () => ({ RpcChild: mocks.FakeRpcChild }));
 vi.mock("../src/fork.ts", async (importOriginal) => ({
 	...await importOriginal<typeof import("../src/fork.ts")>(),
-	createForkSession: (_sessionManager: unknown, context: string) => ({
-		transcriptPath: "/tmp/child.jsonl",
-		referencePath: context === "reference" ? "/tmp/references/parent.jsonl" : undefined,
-	}),
+	createForkSession: (_sessionManager: unknown, context: string, cwd: string, name?: string) => {
+		mocks.sessionCalls.push({ context, cwd, name });
+		return {
+			transcriptPath: "/tmp/child.jsonl",
+			referencePath: context === "reference" ? "/tmp/references/parent.jsonl" : undefined,
+		};
+	},
 }));
 
 const context = { cwd: "/tmp/parent", sessionManager: {} } as unknown as ExtensionContext;
@@ -154,6 +159,7 @@ function createManager(settled: ForkSnapshot[] = []): ForkManager {
 
 beforeEach(() => {
 	mocks.children.length = 0;
+	mocks.sessionCalls.length = 0;
 	mocks.startGate = undefined;
 	mocks.steerGate = undefined;
 	mocks.startError = undefined;
@@ -173,6 +179,15 @@ describe("fork manager", () => {
 			"Fork requires a thinking level: ask the user to choose one",
 		);
 		expect(mocks.children).toHaveLength(0);
+	});
+
+	it("materializes forks with the effective parent cwd or the resolved explicit cwd", async () => {
+		const manager = createManager();
+
+		await manager.start(context, "work", "full", launchOptions);
+		await manager.start(context, "work", "full", launchOptions, "child");
+
+		expect(mocks.sessionCalls.map(({ cwd }) => cwd)).toEqual(["/tmp/parent", "/tmp/parent/child"]);
 	});
 
 	it.each(["full", "reference", "none"] as const)("tracks %s context, turns, final output, and completion", async (mode) => {

@@ -53,16 +53,13 @@ function materializeSession(session: SessionManager, sessionFile: string): void 
 export function createForkSession(
 	sessionManager: ExtensionContext["sessionManager"],
 	context: ForkContext,
-	cwd?: string,
+	cwd: string,
 	name?: string,
 ): { transcriptPath: string; referencePath?: string } {
 	const parentFile = sessionManager.getSessionFile();
 	if (!parentFile) throw new Error("Fork requires a persisted parent session");
 
-	const targetCwd = cwd === undefined ? undefined : resolve(sessionManager.getCwd(), cwd);
-	const source = targetCwd
-		? SessionManager.open(parentFile, undefined, targetCwd)
-		: SessionManager.open(parentFile);
+	const source = SessionManager.open(parentFile, undefined, cwd);
 	const point = forkPoint(sessionManager);
 	let child = source;
 	if (context === "full" && point) {

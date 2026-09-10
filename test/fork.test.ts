@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -53,7 +53,7 @@ function makeSession(withPreviousAssistant = true): SessionManager {
 describe("fork creation", () => {
 	it("preserves the stable prefix in full context", () => {
 		const parent = makeSession();
-		const { transcriptPath, referencePath } = createForkSession(parent, "full");
+		const { transcriptPath, referencePath } = createForkSession(parent, "full", parent.getCwd());
 		const child = SessionManager.open(transcriptPath);
 
 		expect(child.getHeader()).toMatchObject({
@@ -73,11 +73,13 @@ describe("fork creation", () => {
 		parent.appendMessage({ role: "user", content: "abandoned branch", timestamp: Date.now() });
 		parent.branch(forkId);
 		const parentBefore = readFileSync(parent.getSessionFile()!, "utf8");
-		const { transcriptPath, referencePath } = createForkSession(parent, "reference", "worktree", "advice");
+		const effectiveCwd = mkdtempSync(join(tmpdir(), "pi-tiny-fork-effective-"));
+		const { transcriptPath, referencePath } = createForkSession(parent, "reference", effectiveCwd, "advice");
 		const child = SessionManager.open(transcriptPath);
 		const snapshot = readFileSync(referencePath!, "utf8");
 
 		expect(child.buildSessionContext().messages).toEqual([]);
+		expect(child.getCwd()).toBe(effectiveCwd);
 		expect(child.getSessionName()).toBe("advice");
 		expect(dirname(referencePath!)).toBe(join(dirname(transcriptPath), "references"));
 		expect(snapshot.trim().split("\n").map((line) => JSON.parse(line))).toEqual([
@@ -95,7 +97,7 @@ describe("fork creation", () => {
 	it("starts none context fresh without copying history", () => {
 		const parent = makeSession();
 		const parentBefore = readFileSync(parent.getSessionFile()!, "utf8");
-		const { transcriptPath, referencePath } = createForkSession(parent, "none");
+		const { transcriptPath, referencePath } = createForkSession(parent, "none", parent.getCwd());
 		const child = SessionManager.open(transcriptPath);
 
 		expect(child.getEntries()).toEqual([]);
@@ -107,19 +109,23 @@ describe("fork creation", () => {
 
 	it.each(FORK_CONTEXTS)("names the %s child session", (context) => {
 		const parent = makeSession();
-		const { transcriptPath } = createForkSession(parent, context, undefined, "delegate the implementation");
+		const { transcriptPath } = createForkSession(parent, context, parent.getCwd(), "delegate the implementation");
 		expect(SessionManager.open(transcriptPath).getSessionName()).toBe("delegate the implementation");
 	});
 
-	it.each(FORK_CONTEXTS)("uses a resolved explicit cwd for %s context", (context) => {
+	it.each(FORK_CONTEXTS)("keeps the effective cwd for %s context when it differs from the stored cwd", (context) => {
 		const parent = makeSession();
-		const { transcriptPath } = createForkSession(parent, context, "worktree");
-		expect(SessionManager.open(transcriptPath).getCwd()).toBe(resolve(parent.getCwd(), "worktree"));
+		const effectiveCwd = mkdtempSync(join(tmpdir(), "pi-tiny-fork-effective-"));
+		const reopened = SessionManager.open(parent.getSessionFile()!, undefined, effectiveCwd);
+		const { transcriptPath } = createForkSession(reopened, context, effectiveCwd);
+
+		expect(reopened.getCwd()).toBe(effectiveCwd);
+		expect(SessionManager.open(transcriptPath).getCwd()).toBe(effectiveCwd);
 	});
 
 	it.each(FORK_CONTEXTS)("materializes %s context without a previous assistant response", (context) => {
 		const parent = makeSession(false);
-		const { transcriptPath, referencePath } = createForkSession(parent, context);
+		const { transcriptPath, referencePath } = createForkSession(parent, context, parent.getCwd());
 		const child = SessionManager.open(transcriptPath);
 		expect(child.buildSessionContext().messages).toHaveLength(context === "full" ? 2 : 0);
 		if (referencePath) {
@@ -132,7 +138,7 @@ describe("fork creation", () => {
 		const forkMessage = (parent.getLeafEntry() as { message: AssistantMessage }).message;
 		parent.resetLeaf();
 		parent.appendMessage(forkMessage);
-		const { transcriptPath, referencePath } = createForkSession(parent, context);
+		const { transcriptPath, referencePath } = createForkSession(parent, context, parent.getCwd());
 		expect(SessionManager.open(transcriptPath).getEntries()).toEqual([]);
 		if (referencePath) {
 			expect(readFileSync(referencePath, "utf8").trim().split("\n")).toHaveLength(1);
