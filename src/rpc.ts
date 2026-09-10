@@ -249,27 +249,30 @@ export class RpcChild {
 
 	private processLine(line: string): void {
 		if (!this.process || this.exited || !line.trim()) return;
-		let value: Record<string, unknown>;
+		let value: unknown;
 		try {
-			value = JSON.parse(line) as Record<string, unknown>;
+			value = JSON.parse(line);
 		} catch {
 			return;
 		}
+		if (typeof value !== "object" || value === null) return;
+		const record = value as Record<string, unknown>;
+		if (typeof record.type !== "string") return;
 
-		if (value.type === "response") {
-			const id = typeof value.id === "string" ? value.id : undefined;
+		if (record.type === "response") {
+			const id = typeof record.id === "string" ? record.id : undefined;
 			if (!id) return;
 			const pending = this.pending.get(id);
 			if (!pending) return;
 			this.pending.delete(id);
 			clearTimeout(pending.timeout);
-			const response = value as unknown as RpcResponse;
+			const response = record as unknown as RpcResponse;
 			if (response.success) pending.resolve(response.data);
 			else pending.reject(new Error(response.error ?? `RPC command failed: ${response.command}`));
 			return;
 		}
 
-		const event = value as unknown as RpcEvent;
+		const event = record as unknown as RpcEvent;
 		if (event.type === "extension_ui_request") {
 			this.cancelDialog(event);
 		}

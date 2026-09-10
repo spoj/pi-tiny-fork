@@ -125,6 +125,33 @@ describe("RPC child", () => {
 		expect(lines).toEqual(["�"]);
 	});
 
+	it.each(["null", "true", "42", '"text"', "[]", "{}", '{"type":5}'])(
+		"ignores a non-record RPC line: %s",
+		(line) => {
+			const child = new RpcChild("/tmp", "/tmp/session.jsonl");
+			const internals = child as unknown as RpcChildInternals;
+			const events: unknown[] = [];
+			child.onEvent((event) => events.push(event));
+			internals.process = {};
+
+			expect(() => internals.processLine(line)).not.toThrow();
+			expect(events).toEqual([]);
+		},
+	);
+
+	it("keeps dispatching records after a malformed line", () => {
+		const child = new RpcChild("/tmp", "/tmp/session.jsonl");
+		const internals = child as unknown as RpcChildInternals;
+		const events: unknown[] = [];
+		child.onEvent((event) => events.push(event));
+		internals.process = {};
+
+		internals.processLine("null");
+		internals.processLine(JSON.stringify({ type: "turn_start" }));
+
+		expect(events).toEqual([{ type: "turn_start" }]);
+	});
+
 	it("bounds stderr while retaining its newest text", () => {
 		const child = new RpcChild("/tmp", "/tmp/session.jsonl");
 		const internals = child as unknown as RpcChildInternals;
