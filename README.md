@@ -91,8 +91,7 @@ For normal child spawning, install the package (or configure the package in `~/.
 
 ```bash
 npm install
-npm test
-npm run typecheck
+npm run check
 ```
 
 The package loads two extensions through its manifest: `extensions/fork.ts` for forks and `extensions/replay.ts` for package-wide compatible replay. Implementation lives in `src/`.

@@ -15,7 +15,8 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
