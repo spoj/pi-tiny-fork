@@ -18,23 +18,24 @@ ${workingDirectoryNotice}${prompt}${referenceNotice}
 </delegated-task>`;
 }
 
-function isForkToolCall(message: { role: string; content?: unknown }): boolean {
+function isForkToolCall(message: { role: string; content?: unknown }, toolCallId: string): boolean {
 	if (message.role !== "assistant" || !Array.isArray(message.content)) return false;
 	return message.content.some(
 		(block) =>
 			typeof block === "object" &&
 			block !== null &&
 			(block as { type?: unknown }).type === "toolCall" &&
+			(block as { id?: unknown }).id === toolCallId &&
 			(block as { name?: unknown }).name === "Fork",
 	);
 }
 
-export function forkPoint(sessionManager: ExtensionContext["sessionManager"]): string | null {
-	const leaf = sessionManager.getLeafEntry();
-	if (!leaf || leaf.type !== "message" || !isForkToolCall(leaf.message)) {
-		throw new Error("Fork must run from the current assistant tool call");
-	}
-	return leaf.parentId;
+export function forkPoint(sessionManager: ExtensionContext["sessionManager"], toolCallId: string): string | null {
+	const entry = sessionManager.getBranch().find(
+		(candidate) => candidate.type === "message" && isForkToolCall(candidate.message, toolCallId),
+	);
+	if (!entry) throw new Error("Fork must run from the current assistant tool call");
+	return entry.parentId;
 }
 
 function materializeSession(session: SessionManager, sessionFile: string): void {
@@ -53,6 +54,7 @@ function materializeSession(session: SessionManager, sessionFile: string): void 
 export function createForkSession(
 	sessionManager: ExtensionContext["sessionManager"],
 	context: ForkContext,
+	toolCallId: string,
 	cwd: string,
 	name?: string,
 ): { transcriptPath: string; referencePath?: string } {
@@ -60,7 +62,7 @@ export function createForkSession(
 	if (!parentFile) throw new Error("Fork requires a persisted parent session");
 
 	const source = SessionManager.open(parentFile, undefined, cwd);
-	const point = forkPoint(sessionManager);
+	const point = forkPoint(sessionManager, toolCallId);
 	let child = source;
 	if (context === "full" && point) {
 		child.createBranchedSession(point);

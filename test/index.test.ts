@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
 		prompt: string;
 		context: string;
 		launchOptions: { model?: string; thinkingLevel?: string };
+		toolCallId: string;
 		cwd?: string;
 	}> = [];
 
@@ -26,9 +27,10 @@ const mocks = vi.hoisted(() => {
 			prompt: string,
 			context: string,
 			launchOptions: { model?: string; thinkingLevel?: string },
+			toolCallId: string,
 			cwd?: string,
 		) {
-			startCalls.push({ ctx, prompt, context, launchOptions, cwd });
+			startCalls.push({ ctx, prompt, context, launchOptions, toolCallId, cwd });
 			return {
 				id: "fork-1",
 				transcriptPath: "/tmp/fork-1.jsonl",
@@ -160,7 +162,7 @@ describe("fork tools", () => {
 
 		expect(result.content[0].text).toContain("PID: 1234");
 		expect(mocks.startCalls).toHaveLength(1);
-		expect(mocks.startCalls[0]).toMatchObject({ prompt: "check defaults", context, cwd: undefined });
+		expect(mocks.startCalls[0]).toMatchObject({ prompt: "check defaults", context, toolCallId: "call-1", cwd: undefined });
 		expect(mocks.startCalls[0].launchOptions).toEqual({ model: "provider/default", thinkingLevel: "high" });
 	});
 

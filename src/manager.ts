@@ -78,6 +78,7 @@ export class ForkManager {
 		prompt: string,
 		context: ForkContext,
 		launchOptions: ForkLaunchOptions,
+		toolCallId: string,
 		cwd?: string,
 	): Promise<ForkSnapshot> {
 		if (!launchOptions.model?.trim()) {
@@ -95,7 +96,7 @@ export class ForkManager {
 		const cwdExplicit = cwd !== undefined;
 		const forkCwd = cwdExplicit ? resolve(ctx.cwd, cwd) : ctx.cwd;
 		const id = newId(this.forks);
-		const files = createForkSession(ctx.sessionManager, context, forkCwd, prompt);
+		const files = createForkSession(ctx.sessionManager, context, toolCallId, forkCwd, prompt);
 		const fork: ForkRecord = {
 			id,
 			...files,

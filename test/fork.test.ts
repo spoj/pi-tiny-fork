@@ -53,7 +53,7 @@ function makeSession(withPreviousAssistant = true): SessionManager {
 describe("fork creation", () => {
 	it("preserves the stable prefix in full context", () => {
 		const parent = makeSession();
-		const { transcriptPath, referencePath } = createForkSession(parent, "full", parent.getCwd());
+		const { transcriptPath, referencePath } = createForkSession(parent, "full", "call-fork", parent.getCwd());
 		const child = SessionManager.open(transcriptPath);
 
 		expect(child.getHeader()).toMatchObject({
@@ -61,7 +61,7 @@ describe("fork creation", () => {
 			cwd: parent.getCwd(),
 			parentSession: parent.getSessionFile(),
 		});
-		expect(child.getEntries()).toEqual(parent.getBranch(forkPoint(parent)!));
+		expect(child.getEntries()).toEqual(parent.getBranch(forkPoint(parent, "call-fork")!));
 		expect(readFileSync(transcriptPath, "utf8")).not.toContain("call-fork");
 		expect(referencePath).toBeUndefined();
 	});
@@ -74,7 +74,7 @@ describe("fork creation", () => {
 		parent.branch(forkId);
 		const parentBefore = readFileSync(parent.getSessionFile()!, "utf8");
 		const effectiveCwd = mkdtempSync(join(tmpdir(), "pi-tiny-fork-effective-"));
-		const { transcriptPath, referencePath } = createForkSession(parent, "reference", effectiveCwd, "advice");
+		const { transcriptPath, referencePath } = createForkSession(parent, "reference", "call-fork", effectiveCwd, "advice");
 		const child = SessionManager.open(transcriptPath);
 		const snapshot = readFileSync(referencePath!, "utf8");
 
@@ -83,7 +83,7 @@ describe("fork creation", () => {
 		expect(child.getSessionName()).toBe("advice");
 		expect(dirname(referencePath!)).toBe(join(dirname(transcriptPath), "references"));
 		expect(snapshot.trim().split("\n").map((line) => JSON.parse(line))).toEqual([
-			parent.getHeader(), ...parent.getBranch(forkPoint(parent)!),
+			parent.getHeader(), ...parent.getBranch(forkPoint(parent, "call-fork")!),
 		]);
 		expect(snapshot).not.toContain("abandoned branch");
 		expect(snapshot).not.toContain("call-fork");
@@ -97,7 +97,7 @@ describe("fork creation", () => {
 	it("starts none context fresh without copying history", () => {
 		const parent = makeSession();
 		const parentBefore = readFileSync(parent.getSessionFile()!, "utf8");
-		const { transcriptPath, referencePath } = createForkSession(parent, "none", parent.getCwd());
+		const { transcriptPath, referencePath } = createForkSession(parent, "none", "call-fork", parent.getCwd());
 		const child = SessionManager.open(transcriptPath);
 
 		expect(child.getEntries()).toEqual([]);
@@ -109,7 +109,7 @@ describe("fork creation", () => {
 
 	it.each(FORK_CONTEXTS)("names the %s child session", (context) => {
 		const parent = makeSession();
-		const { transcriptPath } = createForkSession(parent, context, parent.getCwd(), "delegate the implementation");
+		const { transcriptPath } = createForkSession(parent, context, "call-fork", parent.getCwd(), "delegate the implementation");
 		expect(SessionManager.open(transcriptPath).getSessionName()).toBe("delegate the implementation");
 	});
 
@@ -117,7 +117,7 @@ describe("fork creation", () => {
 		const parent = makeSession();
 		const effectiveCwd = mkdtempSync(join(tmpdir(), "pi-tiny-fork-effective-"));
 		const reopened = SessionManager.open(parent.getSessionFile()!, undefined, effectiveCwd);
-		const { transcriptPath } = createForkSession(reopened, context, effectiveCwd);
+		const { transcriptPath } = createForkSession(reopened, context, "call-fork", effectiveCwd);
 
 		expect(reopened.getCwd()).toBe(effectiveCwd);
 		expect(SessionManager.open(transcriptPath).getCwd()).toBe(effectiveCwd);
@@ -125,7 +125,7 @@ describe("fork creation", () => {
 
 	it.each(FORK_CONTEXTS)("materializes %s context without a previous assistant response", (context) => {
 		const parent = makeSession(false);
-		const { transcriptPath, referencePath } = createForkSession(parent, context, parent.getCwd());
+		const { transcriptPath, referencePath } = createForkSession(parent, context, "call-fork", parent.getCwd());
 		const child = SessionManager.open(transcriptPath);
 		expect(child.buildSessionContext().messages).toHaveLength(context === "full" ? 2 : 0);
 		if (referencePath) {
@@ -138,7 +138,7 @@ describe("fork creation", () => {
 		const forkMessage = (parent.getLeafEntry() as { message: AssistantMessage }).message;
 		parent.resetLeaf();
 		parent.appendMessage(forkMessage);
-		const { transcriptPath, referencePath } = createForkSession(parent, context, parent.getCwd());
+		const { transcriptPath, referencePath } = createForkSession(parent, context, "call-fork", parent.getCwd());
 		expect(SessionManager.open(transcriptPath).getEntries()).toEqual([]);
 		if (referencePath) {
 			expect(readFileSync(referencePath, "utf8").trim().split("\n")).toHaveLength(1);
@@ -168,6 +168,22 @@ describe("fork creation", () => {
 	it("requires the current assistant Fork call", () => {
 		const parent = SessionManager.create(mkdtempSync(join(tmpdir(), "pi-tiny-fork-cwd-")), mkdtempSync(join(tmpdir(), "pi-tiny-fork-sessions-")));
 		parent.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
-		expect(() => forkPoint(parent)).toThrow("current assistant tool call");
+		expect(() => forkPoint(parent, "call-fork")).toThrow("current assistant tool call");
+	});
+
+	it("finds the fork call after a sequential sibling result advanced the leaf", () => {
+		const parent = makeSession();
+		const forkEntryId = parent.getLeafId()!;
+		const point = parent.getEntry(forkEntryId)!.parentId;
+		parent.appendMessage({
+			role: "toolResult",
+			toolCallId: "call-previous",
+			toolName: "read",
+			content: [{ type: "text", text: "sibling result" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+
+		expect(forkPoint(parent, "call-fork")).toBe(point);
 	});
 });

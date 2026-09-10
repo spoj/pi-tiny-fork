@@ -81,7 +81,7 @@ function registerTools(pi: ExtensionAPI, manager: ForkManager): void {
 		description:
 			"Starts an asynchronous subagent with full, referenced, or no parent conversation. A model and thinking level must be selected explicitly or configured with defaultForkModel and defaultForkThinkingLevel.",
 		parameters: forkTool,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			if (CHILD_PROCESS) childToolError();
 			const launchOptions = resolveForkOptions(
 				{
@@ -100,7 +100,7 @@ function registerTools(pi: ExtensionAPI, manager: ForkManager): void {
 					"Fork requires a thinking level: ask the user to choose one or configure defaultForkThinkingLevel; do not assume one.",
 				);
 			}
-			const fork = await manager.start(ctx, params.task, params.context, launchOptions, params.cwd ?? undefined);
+			const fork = await manager.start(ctx, params.task, params.context, launchOptions, toolCallId, params.cwd ?? undefined);
 			return {
 				content: [{
 					type: "text",
