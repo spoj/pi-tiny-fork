@@ -1,407 +1,204 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ForkManager, type ForkSnapshot } from "../src/manager.ts";
 
 const mocks = vi.hoisted(() => {
-	type Listener = (value: unknown) => void;
-
+	type Listener = (value: any) => void;
+	const start = vi.fn(async (): Promise<void> => undefined);
+	const prompt = vi.fn(async (_message: string): Promise<void> => undefined);
+	const steer = vi.fn(async (_message: string): Promise<void> => undefined);
+	const stop = vi.fn(async (): Promise<void> => undefined);
+	const defaults = vi.fn((): { model?: string; thinkingLevel?: "high" } => ({}));
+	const createSession = vi.fn(() => "/tmp/child.jsonl");
 	class FakeRpcChild {
-		private alive = true;
-		private readonly eventListeners = new Set<Listener>();
-		private readonly exitListeners = new Set<Listener>();
-		readonly prompts: string[] = [];
-		abortCalls = 0;
-		stopCalls = 0;
-
-		constructor(
-			readonly cwd: string,
-			readonly sessionFile: string,
-			readonly options: unknown,
-		) {
-			children.push(this);
-		}
-
-		isAlive(): boolean {
-			return this.alive;
-		}
-
-		getPid(): number {
-			return 1234;
-		}
-
-		getStderr(): string {
-			return "";
-		}
-
-		onEvent(listener: Listener): () => void {
-			this.eventListeners.add(listener);
-			return () => this.eventListeners.delete(listener);
-		}
-
-		onExit(listener: Listener): () => void {
-			this.exitListeners.add(listener);
-			return () => this.exitListeners.delete(listener);
-		}
-
-		async start(): Promise<void> {
-			if (startGate) await startGate;
-			if (startError) throw startError;
-		}
-
-		async prompt(message: string): Promise<void> {
-			this.prompts.push(message);
-			if (promptError) {
-				if (exitBeforePromptError) this.exit({ code: 0, signal: null });
-				throw promptError;
-			}
-		}
-
-		async steer(message: string): Promise<void> {
-			this.prompts.push(message);
-			if (steerGate) await steerGate;
-		}
-
-		abortHangs = false;
-
-		async abort(): Promise<void> {
-			this.abortCalls++;
-			if (this.abortHangs) await new Promise(() => undefined);
-		}
-
-		async stop(): Promise<void> {
-			this.stopCalls++;
-			this.alive = false;
-			if (stopGate) await stopGate;
-		}
-
-		emit(event: unknown): void {
-			for (const listener of this.eventListeners) listener(event);
-		}
-
-		exit(exit: unknown): void {
-			this.alive = false;
-			for (const listener of this.exitListeners) listener(exit);
-		}
+		alive = true;
+		events: Listener[] = [];
+		exits: Listener[] = [];
+		abort = vi.fn(async () => undefined);
+		constructor(readonly cwd: string, readonly sessionFile: string, readonly options: unknown) { children.push(this); }
+		isAlive() { return this.alive; }
+		getPid() { return 1234; }
+		getStderr() { return ""; }
+		onEvent(listener: Listener) { this.events.push(listener); }
+		onExit(listener: Listener) { this.exits.push(listener); }
+		start = start;
+		prompt = prompt;
+		steer = steer;
+		async stop() { this.alive = false; await stop(); }
+		emit(event: unknown) { for (const listener of this.events) listener(event); }
+		exit() { this.alive = false; for (const listener of this.exits) listener({ code: 1, signal: null }); }
 	}
-
 	const children: FakeRpcChild[] = [];
-	const sessionCalls: Array<{ context: string; toolCallId: string; cwd: string; name?: string }> = [];
-	let startGate: Promise<void> | undefined;
-	let steerGate: Promise<void> | undefined;
-	let startError: Error | undefined;
-	let promptError: Error | undefined;
-	let exitBeforePromptError = false;
-	let stopGate: Promise<void> | undefined;
-	return {
-		children,
-		sessionCalls,
-		FakeRpcChild,
-		get startGate() {
-			return startGate;
-		},
-		set startGate(value: Promise<void> | undefined) {
-			startGate = value;
-		},
-		get steerGate() {
-			return steerGate;
-		},
-		set steerGate(value: Promise<void> | undefined) {
-			steerGate = value;
-		},
-		get startError() {
-			return startError;
-		},
-		set startError(value: Error | undefined) {
-			startError = value;
-		},
-		get promptError() {
-			return promptError;
-		},
-		set promptError(value: Error | undefined) {
-			promptError = value;
-		},
-		get exitBeforePromptError() {
-			return exitBeforePromptError;
-		},
-		set exitBeforePromptError(value: boolean) {
-			exitBeforePromptError = value;
-		},
-		get stopGate() {
-			return stopGate;
-		},
-		set stopGate(value: Promise<void> | undefined) {
-			stopGate = value;
-		},
-	};
+	return { FakeRpcChild, children, start, prompt, steer, stop, defaults, createSession };
 });
 
 vi.mock("../src/rpc.ts", () => ({ RpcChild: mocks.FakeRpcChild }));
 vi.mock("../src/fork.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/fork.ts")>(),
-	createForkSession: (_sessionManager: unknown, context: string, toolCallId: string, cwd: string, name?: string) => {
-		mocks.sessionCalls.push({ context, toolCallId, cwd, name });
-		return {
-			transcriptPath: "/tmp/child.jsonl",
-			referencePath: context === "reference" ? "/tmp/references/parent.jsonl" : undefined,
-		};
-	},
+	...await importOriginal<typeof import("../src/fork.ts")>(), createForkSession: mocks.createSession,
+}));
+vi.mock("../src/fork-settings.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/fork-settings.ts")>(), loadForkDefaults: mocks.defaults,
 }));
 
-const context = { cwd: "/tmp/parent", sessionManager: {} } as unknown as ExtensionContext;
-const launchOptions = { model: "provider/test", thinkingLevel: "medium" as const };
+const cwd = join(tmpdir(), "parent");
+const request = { task: "work", model: "provider/test", thinkingLevel: "medium" as const };
 
-function createManager(settled: ForkSnapshot[] = []): ForkManager {
-	return new ForkManager({
-		onUpdate: () => undefined,
-		onSettled: (fork) => settled.push(fork),
-	});
+function createManager(settled: ForkSnapshot[] = []) {
+	return new ForkManager({ cwd, onUpdate: () => undefined, onSettled: (fork) => settled.push(fork) });
+}
+
+function deferred() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => { resolve = done; });
+	return { promise, resolve };
 }
 
 beforeEach(() => {
+	vi.resetAllMocks();
 	mocks.children.length = 0;
-	mocks.sessionCalls.length = 0;
-	mocks.startGate = undefined;
-	mocks.steerGate = undefined;
-	mocks.startError = undefined;
-	mocks.promptError = undefined;
-	mocks.exitBeforePromptError = false;
-	mocks.stopGate = undefined;
+	mocks.defaults.mockReturnValue({});
+	mocks.createSession.mockReturnValue(join(tmpdir(), "child.jsonl"));
 });
 
 describe("fork manager", () => {
-	it("refuses to start without a model or thinking level", async () => {
+	it("requires a model and thinking level before launching", async () => {
 		const manager = createManager();
-
-		await expect(manager.start(context, "work", "full", {}, "call-1")).rejects.toThrow(
-			"First check which models are available, then ask the user to choose one; do not assume a model",
-		);
-		await expect(manager.start(context, "work", "full", { model: "provider/test" }, "call-1")).rejects.toThrow(
-			"Fork requires a thinking level: ask the user to choose one",
-		);
-		expect(mocks.children).toHaveLength(0);
+		await expect(manager.start({ task: "work" })).rejects.toThrow("Fork requires a model");
+		await expect(manager.start({ task: "work", model: "provider/test" })).rejects.toThrow("Fork requires a thinking level");
+		expect(mocks.children).toEqual([]);
 	});
 
-	it("materializes forks with the effective parent cwd or the resolved explicit cwd", async () => {
+	it("resolves defaults centrally and lets explicit options override them independently", async () => {
+		mocks.defaults.mockReturnValue({ model: "provider/default", thinkingLevel: "high" });
 		const manager = createManager();
+		await manager.start({ task: "work", model: "provider/explicit" });
+		expect(mocks.children[0].options).toEqual({ model: "provider/explicit", thinkingLevel: "high" });
+	});
 
-		await manager.start(context, "work", "full", launchOptions, "call-1");
-		await manager.start(context, "work", "full", launchOptions, "call-1", "child");
-
-		expect(mocks.sessionCalls.map(({ toolCallId, cwd }) => ({ toolCallId, cwd }))).toEqual([
-			{ toolCallId: "call-1", cwd: "/tmp/parent" },
-			{ toolCallId: "call-1", cwd: "/tmp/parent/child" },
+	it("creates fresh sessions with the parent cwd or an explicit relative cwd", async () => {
+		const manager = createManager();
+		await manager.start(request);
+		await manager.start({ ...request, cwd: "child" });
+		expect(mocks.createSession.mock.calls).toEqual([
+			[cwd, undefined, "work"], [join(cwd, "child"), undefined, "work"],
 		]);
 	});
 
-	it.each(["full", "reference", "none"] as const)("tracks %s context, turns, final output, and completion", async (mode) => {
+	it("tracks progress and final output, then settles and cleans up once", async () => {
 		const settled: ForkSnapshot[] = [];
 		const manager = createManager(settled);
-		const started = await manager.start(context, "work", mode, launchOptions, "call-1");
+		const started = await manager.start(request);
 		const child = mocks.children[0];
-		expect(child.prompts[0]).toContain("work");
-		expect(child.prompts[0].includes("Parent conversation snapshot:")).toBe(mode === "reference");
-		if (mode === "reference") expect(child.prompts[0]).toContain(started.referencePath);
-
-		child.emit({ type: "turn_start" });
-		child.emit({
-			type: "message_end",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "done" }],
-				stopReason: "stop",
-			},
-		});
-		child.emit({ type: "agent_settled" });
-
 		expect(started).toMatchObject({ status: "running", pid: 1234 });
-		expect(manager.list()[0]).toMatchObject({ status: "completed", turns: 1, lastOutput: "done" });
-		expect(child.stopCalls).toBe(1);
-		expect(settled).toHaveLength(1);
-	});
-
-	it("does not report stale output after an empty assistant message", async () => {
-		const manager = createManager();
-		await manager.start(context, "work", "full", launchOptions, "call-1");
-		const child = mocks.children[0];
-
-		child.emit({
-			type: "message_end",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "old output" }],
-				stopReason: "stop",
-			},
-		});
-		child.emit({
-			type: "message_end",
-			message: { role: "assistant", content: [], stopReason: "stop" },
-		});
-
-		expect(manager.list()[0]).not.toHaveProperty("lastOutput");
-	});
-
-	it("waits for queued operations during shutdown without settling them", async () => {
-		const settled: ForkSnapshot[] = [];
-		const manager = createManager(settled);
-		const started = await manager.start(context, "work", "full", launchOptions, "call-1");
-		let releaseSteer!: () => void;
-		mocks.steerGate = new Promise<void>((resolve) => {
-			releaseSteer = resolve;
-		});
-		const steering = manager.steer(started.id, "steer");
-		await Promise.resolve();
-		const stopping = manager.stop(started.id);
-
-		let shutdownFinished = false;
-		const shuttingDown = manager.shutdown().then(() => {
-			shutdownFinished = true;
-		});
-		await Promise.resolve();
-		expect(shutdownFinished).toBe(false);
-
-		releaseSteer();
-		await steering;
-		await stopping;
-		await shuttingDown;
-		expect(settled).toHaveLength(0);
-	});
-
-	it("reports an unexpected child exit as a failure", async () => {
-		const settled: ForkSnapshot[] = [];
-		const manager = createManager(settled);
-		const started = await manager.start(context, "work", "full", launchOptions, "call-1");
-
-		mocks.children[0].exit({ code: 1, signal: null });
-
-		expect(manager.list()[0]).toMatchObject({
-			id: started.id,
-			status: "failed",
-			error: "Process exited with 1",
-		});
-		expect(mocks.children[0].stopCalls).toBe(1);
-		expect(settled).toHaveLength(1);
-	});
-
-	it("waits for cleanup when prompt failure follows leader exit", async () => {
-		let releaseCleanup!: () => void;
-		mocks.stopGate = new Promise<void>((resolve) => {
-			releaseCleanup = resolve;
-		});
-		mocks.promptError = new Error("prompt failed");
-		mocks.exitBeforePromptError = true;
-		const manager = createManager();
-		const starting = manager.start(context, "work", "full", launchOptions, "call-1");
-
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(mocks.children[0].stopCalls).toBe(1);
-		let rejected = false;
-		void starting.catch(() => {
-			rejected = true;
-		});
-		await Promise.resolve();
-		expect(rejected).toBe(false);
-
-		releaseCleanup();
-		await expect(starting).rejects.toThrow("prompt failed");
-	});
-
-	it("ignores child events after the fork settles", async () => {
-		const manager = createManager();
-		await manager.start(context, "work", "full", launchOptions, "call-1");
-		const child = mocks.children[0];
-
-		child.emit({ type: "agent_settled" });
+		expect(mocks.prompt.mock.calls[0][0]).toContain("Task:\nwork");
 		child.emit({ type: "turn_start" });
-		child.emit({
-			type: "message_end",
-			message: { role: "assistant", content: [{ type: "text", text: "late" }], stopReason: "stop" },
-		});
+		child.emit({ type: "tool_execution_start", toolName: "read" });
+		expect(manager.list()[0].activity).toBe("read");
+		child.emit({ type: "tool_execution_end", toolName: "read" });
+		child.emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
+		child.emit({ type: "agent_settled" });
+		child.emit({ type: "agent_settled" });
+		expect(manager.list()[0]).toMatchObject({ status: "completed", turns: 1, lastOutput: "done" });
+		expect(mocks.stop).toHaveBeenCalledOnce();
+		expect(settled).toHaveLength(1);
+	});
 
-		expect(manager.list()[0]).toMatchObject({ status: "completed", turns: 0 });
+	it("does not reuse stale output after an empty final response", async () => {
+		const manager = createManager();
+		await manager.start(request);
+		mocks.children[0].emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "old" }], stopReason: "stop" } });
+		mocks.children[0].emit({ type: "message_end", message: { role: "assistant", content: [], stopReason: "stop" } });
 		expect(manager.list()[0]).not.toHaveProperty("lastOutput");
 	});
 
-	it("keeps a settled result when a startup failure follows the child's exit", async () => {
+	it("reports unexpected exit and ignores late events", async () => {
 		const settled: ForkSnapshot[] = [];
-		mocks.promptError = new Error("prompt failed");
-		mocks.exitBeforePromptError = true;
 		const manager = createManager(settled);
-
-		await expect(manager.start(context, "work", "full", launchOptions, "call-1")).rejects.toThrow("Could not start");
-
-		expect(settled).toHaveLength(1);
-		expect(settled[0]).toMatchObject({ status: "failed", error: "Process exited with 0" });
+		await manager.start(request);
+		mocks.children[0].exit();
 		mocks.children[0].emit({ type: "turn_start" });
-		expect(manager.list()[0]).toMatchObject({ status: "failed", error: "Process exited with 0", turns: 0 });
+		expect(manager.list()[0]).toMatchObject({ status: "failed", turns: 0, error: "Process exited with 1" });
+		expect(settled).toHaveLength(1);
+		expect(mocks.stop).toHaveBeenCalledOnce();
 	});
 
-	it("reports a startup failure exactly once", async () => {
+	it("reports launch failure exactly once", async () => {
 		const settled: ForkSnapshot[] = [];
-		mocks.startError = new Error("startup failed");
+		mocks.start.mockRejectedValue(new Error("startup failed"));
 		const manager = createManager(settled);
-
-		await expect(manager.start(context, "work", "full", launchOptions, "call-1")).rejects.toThrow("Could not start");
-
+		await expect(manager.start(request)).rejects.toThrow("Could not start");
+		mocks.children[0].emit({ type: "agent_settled" });
 		expect(settled).toHaveLength(1);
 		expect(settled[0]).toMatchObject({ status: "failed", error: "startup failed" });
-		mocks.children[0].emit({ type: "agent_settled" });
-		expect(settled).toHaveLength(1);
-		expect(manager.list()[0].status).toBe("failed");
 	});
 
-	it("stops an active child and settles it once", async () => {
+	it("preserves the settled failure if the prompt fails after process exit and awaits cleanup", async () => {
+		const gate = deferred();
+		mocks.stop.mockReturnValue(gate.promise);
+		mocks.prompt.mockImplementation(async () => { mocks.children[0].exit(); throw new Error("prompt failed"); });
 		const settled: ForkSnapshot[] = [];
 		const manager = createManager(settled);
-		const started = await manager.start(context, "work", "full", launchOptions, "call-1");
-		const child = mocks.children[0];
-
-		const stopped = await manager.stop(started.id);
-
-		expect(stopped.status).toBe("stopped");
-		expect(child.abortCalls).toBe(1);
-		expect(child.stopCalls).toBe(1);
+		let rejected = false;
+		const starting = manager.start(request);
+		void starting.catch(() => { rejected = true; });
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(mocks.stop).toHaveBeenCalledOnce();
+		expect(rejected).toBe(false);
+		gate.resolve();
+		await expect(starting).rejects.toThrow("prompt failed");
 		expect(settled).toHaveLength(1);
+		expect(settled[0].error).toBe("Process exited with 1");
 	});
 
-	it("stops without waiting for an unresponsive abort request", async () => {
+	it("keeps completed children terminal", async () => {
 		const manager = createManager();
-		const started = await manager.start(context, "work", "full", launchOptions, "call-1");
-		const child = mocks.children[0];
-		child.abortHangs = true;
-
-		const stopped = await manager.stop(started.id);
-
-		expect(stopped.status).toBe("stopped");
-		expect(child.abortCalls).toBe(1);
-		expect(child.stopCalls).toBe(1);
-	});
-
-	it("does not let shutdown race an in-flight start", async () => {
-		let releaseStart!: () => void;
-		mocks.startGate = new Promise<void>((resolve) => {
-			releaseStart = resolve;
-		});
-		const manager = createManager();
-		const starting = manager.start(context, "work", "full", launchOptions, "call-1");
-		await Promise.resolve();
-		const child = mocks.children[0];
-
-		const shuttingDown = manager.shutdown();
-		const startingFailure = expect(starting).rejects.toThrow("Could not start");
-		releaseStart();
-
-		await startingFailure;
-		await shuttingDown;
-		expect(child.prompts).toEqual([]);
-		expect(manager.list()[0].status).toBe("failed");
-	});
-
-	it("does not change a completed child to stopped", async () => {
-		const manager = createManager();
-		const started = await manager.start(context, "work", "full", launchOptions, "call-1");
+		const started = await manager.start(request);
 		mocks.children[0].emit({ type: "agent_settled" });
+		mocks.children[0].emit({ type: "turn_start" });
+		await expect(manager.stop(started.id)).rejects.toThrow("not running");
+		await expect(manager.steer(started.id, "more")).rejects.toThrow("not running");
+		expect(manager.list()[0]).toMatchObject({ status: "completed", turns: 0 });
+	});
 
-		await expect(manager.stop(started.id)).rejects.toThrow(`${started.id} is not running`);
-		expect(manager.list()[0].status).toBe("completed");
+	it("stops without waiting for an unresponsive abort", async () => {
+		const settled: ForkSnapshot[] = [];
+		const manager = createManager(settled);
+		const started = await manager.start(request);
+		mocks.children[0].abort.mockReturnValue(new Promise(() => undefined));
+		expect((await manager.stop(started.id)).status).toBe("stopped");
+		expect(settled).toHaveLength(1);
+		expect(mocks.stop).toHaveBeenCalledOnce();
+	});
+
+	it("waits for queued controls during shutdown without notifying the parent", async () => {
+		const gate = deferred();
+		mocks.steer.mockReturnValue(gate.promise);
+		const settled: ForkSnapshot[] = [];
+		const manager = createManager(settled);
+		const started = await manager.start(request);
+		const steering = manager.steer(started.id, "more");
+		await Promise.resolve();
+		const stopping = manager.stop(started.id);
+		let finished = false;
+		const shutdown = manager.shutdown().then(() => { finished = true; });
+		await Promise.resolve();
+		expect(finished).toBe(false);
+		gate.resolve();
+		await Promise.all([steering, stopping, shutdown]);
+		expect(settled).toEqual([]);
+	});
+
+	it("does not send a prompt when shutdown races startup", async () => {
+		const gate = deferred();
+		mocks.start.mockReturnValue(gate.promise);
+		const manager = createManager();
+		const starting = manager.start(request);
+		const failed = expect(starting).rejects.toThrow("Could not start");
+		const shutdown = manager.shutdown();
+		gate.resolve();
+		await failed;
+		await shutdown;
+		expect(mocks.prompt).not.toHaveBeenCalled();
 	});
 });

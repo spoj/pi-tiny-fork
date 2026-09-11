@@ -1,16 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { createForkSession, delegatedTask, type ForkContext } from "./fork.ts";
+import { createForkSession, delegatedTask } from "./fork.ts";
 import { RpcChild, type ChildEventListener, type ChildExit } from "./rpc.ts";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ForkLaunchOptions } from "./fork-settings.ts";
+import { loadForkDefaults, resolveForkOptions, type ForkLaunchOptions } from "./fork-settings.ts";
 
 export type ForkStatus = "starting" | "running" | "completed" | "failed" | "stopped";
 
 export type ForkSnapshot = {
 	id: string;
 	transcriptPath: string;
-	referencePath?: string;
 	pid?: number;
 	status: ForkStatus;
 	activity?: string;
@@ -21,7 +19,6 @@ export type ForkSnapshot = {
 
 type ForkRecord = ForkSnapshot & {
 	cwd: string;
-	cwdExplicit: boolean;
 	launchOptions: ForkLaunchOptions;
 	child?: RpcChild;
 	cleanup?: Promise<void>;
@@ -31,7 +28,11 @@ type ForkRecord = ForkSnapshot & {
 	operation: Promise<void>;
 };
 
+export type ForkStartOptions = ForkLaunchOptions & { task: string; cwd?: string };
+
 type ManagerOptions = {
+	cwd: string;
+	sessionDir?: string;
 	onUpdate: () => void;
 	onSettled: (fork: ForkSnapshot) => void;
 };
@@ -73,14 +74,8 @@ export class ForkManager {
 		return Array.from(this.forks.values()).map((fork) => this.snapshot(fork));
 	}
 
-	async start(
-		ctx: ExtensionContext,
-		prompt: string,
-		context: ForkContext,
-		launchOptions: ForkLaunchOptions,
-		toolCallId: string,
-		cwd?: string,
-	): Promise<ForkSnapshot> {
+	async start(options: ForkStartOptions): Promise<ForkSnapshot> {
+		const launchOptions = resolveForkOptions(options, loadForkDefaults());
 		if (!launchOptions.model?.trim()) {
 			throw new Error(
 				"Fork requires a model. First check which models are available, then ask the user to choose one; do not assume a model. The user can also configure defaultForkModel.",
@@ -93,15 +88,13 @@ export class ForkManager {
 		}
 		if (this.shuttingDown) throw new Error("Fork manager is shutting down");
 
-		const cwdExplicit = cwd !== undefined;
-		const forkCwd = cwdExplicit ? resolve(ctx.cwd, cwd) : ctx.cwd;
+		const cwd = resolve(this.options.cwd, options.cwd ?? ".");
 		const id = newId(this.forks);
-		const files = createForkSession(ctx.sessionManager, context, toolCallId, forkCwd, prompt);
+		const transcriptPath = createForkSession(cwd, this.options.sessionDir, options.task);
 		const fork: ForkRecord = {
 			id,
-			...files,
-			cwd: forkCwd,
-			cwdExplicit,
+			transcriptPath,
+			cwd,
 			launchOptions,
 			status: "starting",
 			turns: 0,
@@ -112,8 +105,7 @@ export class ForkManager {
 		this.forks.set(id, fork);
 		this.options.onUpdate();
 
-		fork.settled = false;
-		const operation = this.launch(fork, prompt);
+		const operation = this.launch(fork, options.task);
 		this.starts.add(operation);
 		try {
 			return await operation;
@@ -172,7 +164,7 @@ export class ForkManager {
 			if (this.shuttingDown) throw new Error("Fork manager is shutting down");
 			fork.status = "running";
 			this.options.onUpdate();
-			await fork.child!.prompt(delegatedTask(prompt, fork.cwdExplicit ? fork.cwd : undefined, fork.referencePath));
+			await fork.child!.prompt(delegatedTask(prompt));
 			return this.snapshot(fork);
 		} catch (error) {
 			fork.stopRequested = true;
@@ -278,7 +270,6 @@ export class ForkManager {
 		return {
 			id: fork.id,
 			transcriptPath: fork.transcriptPath,
-			...(fork.referencePath ? { referencePath: fork.referencePath } : {}),
 			...(fork.pid ? { pid: fork.pid } : {}),
 			status: fork.status,
 			...(fork.activity ? { activity: fork.activity } : {}),
