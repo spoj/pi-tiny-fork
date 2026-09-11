@@ -1,9 +1,10 @@
 import { StringDecoder } from "node:string_decoder";
 import { existsSync } from "node:fs";
-import { basename, join } from "node:path";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { basename } from "node:path";
+import { spawn, type ChildProcess } from "node:child_process";
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ForkLaunchOptions } from "./fork-settings.ts";
+import { stopProcessTree } from "./process.ts";
 
 type RpcResponse = {
 	type: "response";
@@ -27,7 +28,6 @@ type PendingRequest = {
 };
 
 const REQUEST_TIMEOUT_MS = 30_000;
-const KILL_GRACE_MS = 1_000;
 const MAX_STDERR_BYTES = 64 * 1024;
 
 export type ChildExit = {
@@ -104,7 +104,10 @@ export class RpcChild {
 		const invocation = piInvocation(args);
 		const child = spawn(invocation.command, invocation.args, {
 			cwd: this.cwd,
-			env: { ...process.env, PI_FORK_CHILD: "1" },
+			env: {
+				...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("PI_CHILD_"))),
+				PI_FORK_CHILD: "1",
+			},
 			stdio: ["pipe", "pipe", "pipe"],
 			detached: process.platform !== "win32",
 			windowsHide: true,
@@ -153,40 +156,13 @@ export class RpcChild {
 	stop(): Promise<void> {
 		if (this.stopPromise) return this.stopPromise;
 		const child = this.process;
-		if (!child && !this.pid) return Promise.resolve();
+		const pid = this.pid ?? child?.pid;
+		if (!child && pid === undefined) return Promise.resolve();
 
-		this.stopPromise = new Promise<void>((resolve) => {
-			child?.stdin?.destroy();
-			child?.stdout?.destroy();
-			child?.stderr?.destroy();
-			if (process.platform === "win32") {
-				terminateProcessTree(this.pid, child, "SIGTERM");
-				resolve();
-				return;
-			}
-
-			if (processGone(this.pid, child)) {
-				resolve();
-				return;
-			}
-
-			const startedAt = Date.now();
-			const waitForExit = () => {
-				if (processGone(this.pid, child)) {
-					resolve();
-					return;
-				}
-				if (Date.now() - startedAt >= KILL_GRACE_MS) {
-					terminateProcessTree(this.pid, child, "SIGKILL");
-					if (this.process === child) this.handleExit({ code: null, signal: "SIGKILL" });
-					resolve();
-					return;
-				}
-				setTimeout(waitForExit, 25);
-			};
-			terminateProcessTree(this.pid, child, "SIGTERM");
-			waitForExit();
-		});
+		this.stopPromise = (async () => {
+			await stopProcessTree(child, pid);
+			if (this.process === child && this.isAlive()) this.handleExit({ code: null, signal: "SIGKILL" });
+		})();
 		return this.stopPromise;
 	}
 
@@ -320,42 +296,5 @@ export class RpcChild {
 			pending.reject(error);
 		}
 		this.pending.clear();
-	}
-}
-
-function processGone(pid: number | undefined, child: ChildProcess | undefined): boolean {
-	if (!pid) return !child || child.exitCode !== null || child.signalCode != null;
-	try {
-		process.kill(-pid, 0);
-		return false;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "EPERM";
-	}
-}
-
-function terminateProcessTree(pid: number | undefined, child: ChildProcess | undefined, signal: NodeJS.Signals): void {
-	if (!pid) {
-		child?.kill(signal);
-		return;
-	}
-
-	if (process.platform === "win32") {
-		try {
-			execFileSync(
-				join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
-				["/pid", String(pid), "/t", "/f"],
-				{ stdio: "ignore" },
-			);
-			return;
-		} catch {
-			child?.kill(signal);
-			return;
-		}
-	}
-
-	try {
-		process.kill(-pid, signal);
-	} catch {
-		child?.kill(signal);
 	}
 }

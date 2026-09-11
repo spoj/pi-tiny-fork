@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ForkManager, type ForkSnapshot } from "../src/manager.ts";
+import { ForkManager, type JobSnapshot } from "../src/manager.ts";
 
 const mocks = vi.hoisted(() => {
 	type Listener = (value: any) => void;
@@ -44,8 +44,8 @@ vi.mock("../src/fork-settings.ts", async (importOriginal) => ({
 const cwd = join(tmpdir(), "parent");
 const request = { task: "work", model: "provider/test", thinkingLevel: "medium" as const };
 
-function createManager(settled: ForkSnapshot[] = []) {
-	return new ForkManager({ cwd, onUpdate: () => undefined, onSettled: (fork) => settled.push(fork) });
+function createManager(settled: JobSnapshot[] = []) {
+	return new ForkManager({ cwd, sessionDir: join(tmpdir(), "sessions"), onUpdate: () => undefined, onSettled: (job) => settled.push(job) });
 }
 
 function deferred() {
@@ -81,12 +81,12 @@ describe("fork manager", () => {
 		await manager.start(request);
 		await manager.start({ ...request, cwd: "child" });
 		expect(mocks.createSession.mock.calls).toEqual([
-			[cwd, undefined, "work"], [join(cwd, "child"), undefined, "work"],
+			[cwd, join(tmpdir(), "sessions"), "work"], [join(cwd, "child"), join(tmpdir(), "sessions"), "work"],
 		]);
 	});
 
 	it("tracks progress and final output, then settles and cleans up once", async () => {
-		const settled: ForkSnapshot[] = [];
+		const settled: JobSnapshot[] = [];
 		const manager = createManager(settled);
 		const started = await manager.start(request);
 		const child = mocks.children[0];
@@ -94,14 +94,23 @@ describe("fork manager", () => {
 		expect(mocks.prompt.mock.calls[0][0]).toContain("Task:\nwork");
 		child.emit({ type: "turn_start" });
 		child.emit({ type: "tool_execution_start", toolName: "read" });
-		expect(manager.list()[0].activity).toBe("read");
+		expect(manager.list()[0]).toMatchObject({ activity: "read" });
 		child.emit({ type: "tool_execution_end", toolName: "read" });
 		child.emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
 		child.emit({ type: "agent_settled" });
 		child.emit({ type: "agent_settled" });
+		await manager.result(started.id, true);
 		expect(manager.list()[0]).toMatchObject({ status: "completed", turns: 1, lastOutput: "done" });
 		expect(mocks.stop).toHaveBeenCalledOnce();
 		expect(settled).toHaveLength(1);
+	});
+
+	it.each(["error", "aborted"])("reports a final %s response as failed", async (stopReason) => {
+		const manager = createManager();
+		const child = await manager.start(request);
+		mocks.children[0].emit({ type: "message_end", message: { role: "assistant", content: [], stopReason, errorMessage: "model failed" } });
+		mocks.children[0].emit({ type: "agent_settled" });
+		expect(await manager.result(child.id, true)).toMatchObject({ status: "failed", error: "model failed" });
 	});
 
 	it("does not reuse stale output after an empty final response", async () => {
@@ -113,18 +122,19 @@ describe("fork manager", () => {
 	});
 
 	it("reports unexpected exit and ignores late events", async () => {
-		const settled: ForkSnapshot[] = [];
+		const settled: JobSnapshot[] = [];
 		const manager = createManager(settled);
 		await manager.start(request);
 		mocks.children[0].exit();
 		mocks.children[0].emit({ type: "turn_start" });
+		await manager.result(manager.list()[0].id, true);
 		expect(manager.list()[0]).toMatchObject({ status: "failed", turns: 0, error: "Process exited with 1" });
 		expect(settled).toHaveLength(1);
 		expect(mocks.stop).toHaveBeenCalledOnce();
 	});
 
 	it("reports launch failure exactly once", async () => {
-		const settled: ForkSnapshot[] = [];
+		const settled: JobSnapshot[] = [];
 		mocks.start.mockRejectedValue(new Error("startup failed"));
 		const manager = createManager(settled);
 		await expect(manager.start(request)).rejects.toThrow("Could not start");
@@ -137,7 +147,7 @@ describe("fork manager", () => {
 		const gate = deferred();
 		mocks.stop.mockReturnValue(gate.promise);
 		mocks.prompt.mockImplementation(async () => { mocks.children[0].exit(); throw new Error("prompt failed"); });
-		const settled: ForkSnapshot[] = [];
+		const settled: JobSnapshot[] = [];
 		const manager = createManager(settled);
 		let rejected = false;
 		const starting = manager.start(request);
@@ -162,7 +172,7 @@ describe("fork manager", () => {
 	});
 
 	it("stops without waiting for an unresponsive abort", async () => {
-		const settled: ForkSnapshot[] = [];
+		const settled: JobSnapshot[] = [];
 		const manager = createManager(settled);
 		const started = await manager.start(request);
 		mocks.children[0].abort.mockReturnValue(new Promise(() => undefined));
@@ -171,22 +181,73 @@ describe("fork manager", () => {
 		expect(mocks.stop).toHaveBeenCalledOnce();
 	});
 
-	it("waits for queued controls during shutdown without notifying the parent", async () => {
+	it("does not let pending steering block shutdown", async () => {
 		const gate = deferred();
 		mocks.steer.mockReturnValue(gate.promise);
-		const settled: ForkSnapshot[] = [];
+		const settled: JobSnapshot[] = [];
 		const manager = createManager(settled);
 		const started = await manager.start(request);
 		const steering = manager.steer(started.id, "more");
-		await Promise.resolve();
-		const stopping = manager.stop(started.id);
-		let finished = false;
-		const shutdown = manager.shutdown().then(() => { finished = true; });
-		await Promise.resolve();
-		expect(finished).toBe(false);
-		gate.resolve();
-		await Promise.all([steering, stopping, shutdown]);
+		await manager.shutdown();
+		expect(mocks.children[0].isAlive()).toBe(false);
 		expect(settled).toEqual([]);
+		gate.resolve();
+		await steering;
+	});
+
+	it("waits without blocking steering and can cancel only the waiter", async () => {
+		const manager = createManager();
+		const child = await manager.start(request);
+		await expect(manager.result(child.id)).rejects.toThrow("has not finished");
+		const controller = new AbortController();
+		const waiting = manager.result(child.id, true, controller.signal);
+		const rejected = expect(waiting).rejects.toThrow("wait cancelled");
+		await manager.steer(child.id, "new direction");
+		controller.abort(new Error("wait cancelled"));
+		await rejected;
+		expect(manager.status(child.id).status).toBe("running");
+		const finished = manager.result(child.id, true);
+		mocks.children[0].emit({ type: "agent_settled" });
+		expect(await finished).toMatchObject({ status: "completed" });
+		expect(await manager.result(child.id)).toMatchObject({ status: "completed" });
+	});
+
+	it("keeps a startup cancellation terminal and never sends its task", async () => {
+		const gate = deferred();
+		mocks.start.mockReturnValue(gate.promise);
+		const settled: JobSnapshot[] = [];
+		const manager = createManager(settled);
+		const starting = manager.start(request);
+		const failed = expect(starting).rejects.toThrow("stopped during startup");
+		const id = manager.list()[0].id;
+		await manager.stop(id);
+		gate.resolve();
+		await failed;
+		expect(manager.status(id).status).toBe("stopped");
+		expect(mocks.prompt).not.toHaveBeenCalled();
+		expect(settled).toHaveLength(1);
+	});
+
+	it("does not publish a terminal status until cleanup finishes", async () => {
+		const gate = deferred();
+		mocks.stop.mockReturnValue(gate.promise);
+		const manager = createManager();
+		const child = await manager.start(request);
+		mocks.children[0].emit({ type: "agent_settled" });
+		expect(manager.status(child.id).status).toBe("running");
+		await expect(manager.result(child.id)).rejects.toThrow("has not finished");
+		await expect(manager.stop(child.id)).rejects.toThrow("not running");
+		gate.resolve();
+		expect(await manager.result(child.id, true)).toMatchObject({ status: "completed" });
+	});
+
+	it("reports cleanup failure to waiters instead of leaving them pending", async () => {
+		const manager = createManager();
+		const child = await manager.start(request);
+		mocks.stop.mockRejectedValue(new Error("cannot stop"));
+		const result = manager.result(child.id, true);
+		mocks.children[0].emit({ type: "agent_settled" });
+		expect(await result).toMatchObject({ status: "failed", error: "Child cleanup failed: cannot stop" });
 	});
 
 	it("does not send a prompt when shutdown races startup", async () => {
@@ -199,6 +260,7 @@ describe("fork manager", () => {
 		gate.resolve();
 		await failed;
 		await shutdown;
+		expect(manager.list()[0].status).toBe("stopped");
 		expect(mocks.prompt).not.toHaveBeenCalled();
 	});
 });

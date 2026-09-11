@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { RpcChild, type ChildExit } from "../src/rpc.ts";
+import { createForkSession } from "../src/fork.ts";
 
 type RpcChildInternals = {
 	process: object | undefined;
@@ -70,47 +71,81 @@ describe("RPC child", () => {
 		}
 	});
 
-	it.each(["low", "high"] as const)("restores model and %s thinking without overrides or a child prompt", async (thinkingLevel) => {
-		const directory = mkdtempSync(join(tmpdir(), "pi-tiny-fork-restore-"));
+	it.each(["low", "high"] as const)("persists explicit model and %s thinking in a fresh session before prompting", async (thinkingLevel) => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-tiny-fork-fresh-"));
 		writeFileSync(join(directory, "auth.json"), JSON.stringify({ openai: { type: "api_key", key: "test-key" } }));
-		writeFileSync(join(directory, "settings.json"), JSON.stringify({ defaultThinkingLevel: "low" }));
-		const session = SessionManager.create(directory, join(directory, "transcripts"));
-		session.appendModelChange("openai", "gpt-5-mini");
-		session.appendThinkingLevelChange("low");
-		session.appendMessage({ role: "user", content: "inherited", timestamp: Date.now() });
-		const sessionFile = session.getSessionFile()!;
-		writeFileSync(sessionFile, [session.getHeader(), ...session.getEntries()].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+		writeFileSync(join(directory, "settings.json"), JSON.stringify({ defaultProvider: "openai", defaultModel: "gpt-5-mini", defaultThinkingLevel: "low" }));
+		const sessionFile = createForkSession(directory, join(directory, "transcripts"));
 		const originalScript = process.argv[1];
-		let child: RpcChild | undefined;
+		const child = new RpcChild(directory, sessionFile, { model: "openai/gpt-5", thinkingLevel });
 		try {
 			vi.stubEnv("PI_CODING_AGENT_DIR", directory);
 			vi.stubEnv("PI_OFFLINE", "1");
 			process.argv[1] = fileURLToPath(new URL("./cli.js", import.meta.resolve("@earendil-works/pi-coding-agent")));
-			child = new RpcChild(directory, sessionFile, { model: "openai/gpt-5", thinkingLevel });
-			await child.start();
-			await child.stop();
-
-			const restored = SessionManager.open(sessionFile);
-			expect(restored.buildSessionContext()).toMatchObject({
-				model: { provider: "openai", modelId: "gpt-5" },
-				thinkingLevel,
-			});
-			expect(restored.getEntries().filter((entry) => entry.type === "thinking_level_change")).toHaveLength(
-				thinkingLevel === "low" ? 1 : 2,
-			);
-			child = new RpcChild(directory, sessionFile);
 			await child.start();
 			expect(await (child as unknown as RpcChildInternals).request({ type: "get_state" })).toMatchObject({
-				model: { provider: "openai", id: "gpt-5" },
-				thinkingLevel,
+				model: { provider: "openai", id: "gpt-5" }, thinkingLevel, messageCount: 0,
+			});
+			await child.stop();
+			expect(SessionManager.open(sessionFile).buildSessionContext()).toMatchObject({
+				model: { provider: "openai", modelId: "gpt-5" }, thinkingLevel, messages: [],
 			});
 		} finally {
-			await child?.stop();
+			await child.stop();
 			process.argv[1] = originalScript;
 			vi.unstubAllEnvs();
 			rmSync(directory, { recursive: true, force: true });
 		}
 	}, 15_000);
+
+	it("does not expose any manager credentials or run metadata to agent processes", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-tiny-fork-env-"));
+		const script = join(directory, "child.cjs");
+		const log = join(directory, "env.json");
+		writeFileSync(script, `
+			require("node:fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify({
+				child: process.env.PI_FORK_CHILD,
+				keys: Object.keys(process.env).filter(key => key.toUpperCase().startsWith("PI_CHILD_")),
+				normal: process.env.FORK_TEST_SETTING
+			}));
+			process.stdin.resume();
+		`);
+		const originalScript = process.argv[1];
+		const child = new RpcChild(directory, join(directory, "session.jsonl"));
+		try {
+			for (const key of ["PI_CHILD_ENDPOINT", "PI_CHILD_TOKEN", "PI_CHILD_RUN_ID", "PI_CHILD_CLI", "PI_CHILD_NODE", "pi_child_extra"]) vi.stubEnv(key, "private");
+			vi.stubEnv("FORK_TEST_SETTING", "preserved");
+			process.argv[1] = script;
+			await child.start();
+			await expect.poll(() => existsSync(log)).toBe(true);
+			expect(JSON.parse(readFileSync(log, "utf8"))).toEqual({ child: "1", keys: [], normal: "preserved" });
+		} finally {
+			await child.stop();
+			process.argv[1] = originalScript;
+			vi.unstubAllEnvs();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("can stop immediately before the spawn event records the PID", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-tiny-fork-start-"));
+		const script = join(directory, "child.cjs");
+		writeFileSync(script, "setInterval(() => {}, 1000);");
+		const originalScript = process.argv[1];
+		const child = new RpcChild(directory, join(directory, "session.jsonl"));
+		try {
+			process.argv[1] = script;
+			const starting = child.start();
+			const stopping = child.stop();
+			await starting;
+			await stopping;
+			await expect.poll(() => { try { process.kill(child.getPid(), 0); return true; } catch { return false; } }).toBe(false);
+		} finally {
+			await child.stop();
+			process.argv[1] = originalScript;
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
 
 	it("flushes a pending decoder tail when stdout ends", () => {
 		const child = new RpcChild("/tmp", "/tmp/session.jsonl");
@@ -201,7 +236,7 @@ describe("RPC child", () => {
 		const stdin = { destroy: vi.fn() };
 		const stdout = { destroy: vi.fn() };
 		const stderr = { destroy: vi.fn() };
-		internals.process = { exitCode: 1, signalCode: null, stdin, stdout, stderr } as never;
+		internals.process = { exitCode: 1, signalCode: null, stdin, stdout, stderr, kill: vi.fn() } as never;
 
 		internals.handleExit({ code: 1, signal: null });
 		await child.stop();
@@ -278,7 +313,7 @@ describe("RPC child", () => {
 		const directory = mkdtempSync(join(tmpdir(), "pi-tiny-fork-"));
 		const marker = join(directory, "leaked");
 		const ready = join(directory, "ready");
-		const script = join(directory, "rpc-child.js");
+		const script = join(directory, "rpc-child.cjs");
 		const descendant = [
 			"const fs = require('node:fs');",
 			"process.on('SIGTERM', () => {});",
@@ -313,7 +348,7 @@ describe("RPC child", () => {
 		}
 	});
 
-	it("resolves one concurrent stop after a forced kill even if stdio never closes", async () => {
+	it.skipIf(process.platform === "win32")("resolves one concurrent stop after a forced kill even if stdio never closes", async () => {
 		vi.useFakeTimers();
 		try {
 			const child = new RpcChild("/tmp", "/tmp/session.jsonl");

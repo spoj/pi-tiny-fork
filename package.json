@@ -1,11 +1,14 @@
 {
   "name": "pi-tiny-fork",
   "version": "0.1.0",
-  "description": "Tiny asynchronous session forks for Pi",
+  "description": "Fresh Pi child sessions and tracked script runs",
   "type": "module",
   "keywords": ["pi-package"],
   "license": "MIT",
-  "files": ["README.md", "extensions", "src"],
+  "files": ["README.md", "extensions", "src", "bin", "examples"],
+  "bin": {
+    "pi-child": "./bin/pi-child.mjs"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/spoj/pi-tiny-fork.git"
