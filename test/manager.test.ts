@@ -91,7 +91,7 @@ describe("fork manager", () => {
 		const started = await manager.start(request);
 		const child = mocks.children[0];
 		expect(started).toMatchObject({ status: "running", pid: 1234 });
-		expect(mocks.prompt.mock.calls[0][0]).toContain("Task:\nwork");
+		expect(mocks.prompt.mock.calls[0][0]).toContain("\nwork\n");
 		child.emit({ type: "turn_start" });
 		child.emit({ type: "tool_execution_start", toolName: "read" });
 		expect(manager.list()[0]).toMatchObject({ activity: "read" });

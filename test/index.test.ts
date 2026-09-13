@@ -94,9 +94,9 @@ describe("fork extension", () => {
 		vi.stubEnv("PI_FORK_CHILD", "");
 		const { event } = await setup();
 		const prompt = event("before_agent_start")({ systemPrompt: "base" }).systemPrompt;
-		expect(prompt).toContain("Make the task self-contained");
+		expect(prompt).toContain("Make every fork task self-contained");
 		expect(prompt).toContain("pi-child run");
-		expect(prompt).toContain("Do not wait for children or runs in the parent conversation");
+		expect(prompt).toContain("Never wait for child or run results in the parent turn");
 	});
 
 	it("exposes the session connection to scripts and restores it on idempotent shutdown", async () => {

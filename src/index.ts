@@ -10,36 +10,33 @@ import { THINKING_LEVELS } from "./fork-settings.ts";
 
 const CHILD_PROCESS = process.env.PI_FORK_CHILD === "1";
 const WIDGET_KEY = "pi-tiny-fork";
-const DELEGATION_SYSTEM_PROMPT = `Fork({task, cwd:null, model:null, thinkingLevel:null}) starts a fresh subagent without parent conversation history. Make the task self-contained. Keep model/thinking defaults unless an override is necessary. ForkSteer sends new direction; ForkStop cancels a child or script run. For scripted delegation, pi-child run -- COMMAND starts a tracked background script; its descendants use pi-child start and result ID --wait. The run returns immediately and sends one aggregate completion. Use pi-child --help for CLI syntax. Scripts can portably invoke the Node executable in PI_CHILD_NODE with the CLI path in PI_CHILD_CLI. Do not wait for children or runs in the parent conversation.`;
+const DELEGATION_SYSTEM_PROMPT = `Make every fork task self-contained. Use configured model/thinking defaults unless an override is needed. Never wait for child or run results in the parent turn. For scripted delegation, \`pi-child run -- COMMAND\` returns immediately and sends one aggregate result; its script uses \`pi-child start\` and \`pi-child result ID --wait\`. Invoke the CLI portably as \`"$PI_CHILD_NODE" "$PI_CHILD_CLI"\`; see \`pi-child --help\`.`;
 
 const forkTool = Type.Object({
-	task: Type.String({ description: "Task sent to the forked child" }),
+	task: Type.String({ description: "Self-contained task for the child" }),
 	cwd: Type.Union([
-		Type.String({
-			description:
-				"Working directory for the fork process. Relative paths resolve from the parent working directory; null inherits it",
-		}),
+		Type.String({ description: "Child working directory; relative paths resolve from parent cwd, null inherits it" }),
 		Type.Null(),
 	]),
 	model: Type.Union([
-		Type.String({ description: "Exact provider/model-id for the fork; null uses defaultForkModel" }),
+		Type.String({ description: "Exact provider/model-id, or null for defaultForkModel" }),
 		Type.Null(),
 	]),
 	thinkingLevel: Type.Union([
 		StringEnum(THINKING_LEVELS, {
-			description: "Thinking level for the fork; null uses defaultForkThinkingLevel",
+			description: "Thinking level, or null for defaultForkThinkingLevel",
 		}),
 		Type.Null(),
 	]),
 }, { additionalProperties: false });
 
 const controlTool = Type.Object({
-	id: Type.String({ description: "Identifier of the fork to control" }),
-	prompt: Type.String({ description: "Task or direction sent to the fork" }),
+	id: Type.String({ description: "Running child ID" }),
+	prompt: Type.String({ description: "Steering message" }),
 });
 
 const stopTool = Type.Object({
-	id: Type.String({ description: "Identifier of the fork to stop" }),
+	id: Type.String({ description: "Child or run ID" }),
 });
 
 function renderWidget(ctx: ExtensionContext, manager: ForkManager): void {
@@ -69,8 +66,7 @@ function registerTools(pi: ExtensionAPI, manager: ForkManager): void {
 	pi.registerTool({
 		name: "Fork",
 		label: "Fork",
-		description:
-			"Starts an asynchronous subagent with a fresh conversation and a self-contained task. A model and thinking level must be selected explicitly or configured with defaultForkModel and defaultForkThinkingLevel.",
+		description: "Starts a background child without parent conversation context.",
 		parameters: forkTool,
 		async execute(_toolCallId, params) {
 			const fork = await manager.start({
@@ -104,7 +100,7 @@ function registerTools(pi: ExtensionAPI, manager: ForkManager): void {
 	pi.registerTool({
 		name: "ForkSteer",
 		label: "Fork Steer",
-		description: "Sends a steering message to a running fork.",
+		description: "Steers a running child.",
 		parameters: controlTool,
 		async execute(_toolCallId, params) {
 			const fork = await manager.steer(params.id, params.prompt);
@@ -122,7 +118,7 @@ function registerTools(pi: ExtensionAPI, manager: ForkManager): void {
 	pi.registerTool({
 		name: "ForkStop",
 		label: "Fork Stop",
-		description: "Stops a child, or a script run and all its outstanding children.",
+		description: "Stops a child, or a run and its active children.",
 		parameters: stopTool,
 		async execute(_toolCallId, params) {
 			const job = await manager.stop(params.id);

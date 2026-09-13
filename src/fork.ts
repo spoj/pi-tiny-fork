@@ -4,9 +4,8 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 export function delegatedTask(task: string): string {
 	return `<delegated-task>
-Complete the task below. Return a concise final report to the parent, leading with conclusions and verification. Do not start other agents.
+Do not start subagents. Report conclusions and verification concisely.
 
-Task:
 ${task}
 </delegated-task>`;
 }

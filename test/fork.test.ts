@@ -29,11 +29,11 @@ describe("fresh child sessions", () => {
 		if (process.platform !== "win32") expect(statSync(first).mode & 0o777).toBe(0o600);
 	});
 
-	it("wraps the task with final-report and non-delegation guidance", () => {
-		const prompt = delegatedTask("Review the change");
-		expect(prompt).toContain("Task:\nReview the change");
-		expect(prompt).toContain("final report to the parent");
-		expect(prompt).toContain("Do not start other agents");
-		expect(prompt).toMatch(/^<delegated-task>[\s\S]*<\/delegated-task>$/);
+	it("wraps the task with concise reporting and non-delegation guidance", () => {
+		expect(delegatedTask("Review the change")).toBe(`<delegated-task>
+Do not start subagents. Report conclusions and verification concisely.
+
+Review the change
+</delegated-task>`);
 	});
 });
