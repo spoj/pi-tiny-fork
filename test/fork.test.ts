@@ -31,7 +31,7 @@ describe("fresh child sessions", () => {
 
 	it("wraps the task with concise reporting and non-delegation guidance", () => {
 		expect(delegatedTask("Review the change")).toBe(`<delegated-task>
-Do not start subagents. Report conclusions and verification concisely.
+Do not start subagents. Lead with concise conclusions and verification.
 
 Review the change
 </delegated-task>`);

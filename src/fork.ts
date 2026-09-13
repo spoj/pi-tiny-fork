@@ -4,7 +4,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 export function delegatedTask(task: string): string {
 	return `<delegated-task>
-Do not start subagents. Report conclusions and verification concisely.
+Do not start subagents. Lead with concise conclusions and verification.
 
 ${task}
 </delegated-task>`;
