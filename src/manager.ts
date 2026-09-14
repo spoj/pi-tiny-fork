@@ -6,6 +6,7 @@ import { createForkSession, delegatedTask } from "./fork.ts";
 import { RpcChild, type ChildEventListener, type ChildExit } from "./rpc.ts";
 import { loadForkDefaults, resolveForkOptions, type ForkLaunchOptions } from "./fork-settings.ts";
 import { stopProcessTree } from "./process.ts";
+import { LiveOutput, type LiveChunk } from "./live-output.ts";
 
 export type ForkStatus = "starting" | "running" | "completed" | "failed" | "stopped";
 
@@ -26,6 +27,7 @@ export type ForkSnapshot = {
 
 export type RunSnapshot = {
 	kind: "run";
+	delivery: "aggregate" | "live";
 	id: string;
 	argv: string[];
 	cwd: string;
@@ -35,6 +37,7 @@ export type RunSnapshot = {
 	pid?: number;
 	status: ForkStatus;
 	exitCode?: number;
+	signal?: NodeJS.Signals;
 	lastOutput?: string;
 	outputTruncated?: boolean;
 	error?: string;
@@ -54,7 +57,13 @@ type ForkRecord = ForkSnapshot & Completion & {
 	lastStopReason?: string;
 };
 
-type RunRecord = RunSnapshot & Completion & { process?: ChildProcess };
+type RunRecord = RunSnapshot & Completion & {
+	process?: ChildProcess;
+	output?: LiveOutput;
+	outputFile?: number;
+	outputTimer?: NodeJS.Timeout;
+	readOutput?: () => void;
+};
 type JobRecord = ForkRecord | RunRecord;
 
 type ManagerOptions = {
@@ -62,6 +71,7 @@ type ManagerOptions = {
 	sessionDir: string;
 	onUpdate: () => void;
 	onSettled: (job: JobSnapshot) => void;
+	onOutput?: (run: RunSnapshot, chunk: LiveChunk & { streamEnded?: boolean }) => void;
 };
 
 function errorText(error: unknown): string {
@@ -137,21 +147,26 @@ export class ForkManager {
 		}
 	}
 
-	async run(argv: string[], options: { cwd?: string; runId?: string } = {}): Promise<RunSnapshot> {
+	async run(argv: string[], options: { cwd?: string; runId?: string; delivery?: "aggregate" | "live"; stdin?: string } = {}): Promise<RunSnapshot> {
 		if (this.shuttingDown) throw new Error("Fork manager is shutting down");
 		if (options.runId !== undefined) throw new Error("Nested runs are not supported; execute descendant scripts normally");
 		if (!argv.length) throw new Error("A run requires a command");
+		const delivery = options.delivery ?? "aggregate";
+		if (delivery === "live" && this.list().filter((job) => job.kind === "run" && job.delivery === "live"
+			&& (job.status === "starting" || job.status === "running")).length >= 8) {
+			throw new Error("Maximum of 8 live runs already running");
+		}
 		const id = `run-${randomUUID()}`;
 		const directory = join(this.options.sessionDir, "runs", id);
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		const run: RunRecord = {
-			kind: "run", id, argv: [...argv], cwd: resolve(this.options.cwd, options.cwd ?? "."),
+			kind: "run", delivery, id, argv: [...argv], cwd: resolve(this.options.cwd, options.cwd ?? "."),
 			childIds: [], stdoutPath: join(directory, "stdout.log"), stderrPath: join(directory, "stderr.log"),
 			status: "starting", waiters: new Set(),
 		};
 		this.jobs.set(id, run);
 		this.options.onUpdate();
-		const starting = this.launchRun(run);
+		const starting = this.launchRun(run, options.stdin);
 		this.starts.add(starting);
 		try {
 			return await starting;
@@ -205,21 +220,47 @@ export class ForkManager {
 		}
 	}
 
-	private async launchRun(run: RunRecord): Promise<RunSnapshot> {
+	private async launchRun(run: RunRecord, stdin?: string): Promise<RunSnapshot> {
 		const files: number[] = [];
 		try {
 			for (const path of [run.stdoutPath, run.stderrPath]) files.push(openSync(path, "wx", 0o600));
+			if (run.delivery === "live") {
+				const file = openSync(run.stdoutPath, "r");
+				run.outputFile = file;
+				let offset = 0;
+				run.output = new LiveOutput((chunk) => {
+					if (chunk.suppressed) {
+						clearInterval(run.outputTimer);
+						run.readOutput = undefined;
+					}
+					if (!this.shuttingDown) this.options.onOutput?.(this.snapshot(run), chunk);
+				});
+				run.readOutput = () => {
+					const size = fstatSync(file).size - offset;
+					if (size === 0) return;
+					const buffer = Buffer.alloc(Math.min(size, 50 * 1024 + 1));
+					const length = readSync(file, buffer, 0, buffer.length, offset);
+					offset += length;
+					run.output!.append(buffer.subarray(0, length));
+				};
+				run.outputTimer = setInterval(run.readOutput, 100);
+			}
 			const child = spawn(run.argv[0], run.argv.slice(1), {
 				cwd: run.cwd,
 				env: { ...process.env, PI_CHILD_RUN_ID: run.id },
-				stdio: ["ignore", files[0], files[1]],
+				stdio: [stdin === undefined ? "ignore" : "pipe", files[0], files[1]],
 				detached: process.platform !== "win32",
 				windowsHide: true,
 			});
 			run.process = child;
+			if (stdin !== undefined) {
+				child.stdin!.on("error", () => {});
+				child.stdin!.end(stdin);
+			}
 			child.once("exit", (code, signal) => {
 				if (run.finishing) return;
 				run.exitCode = code ?? undefined;
+				run.signal = signal ?? undefined;
 				void this.finishRun(run, code === 0 ? "completed" : "failed", code === 0 ? undefined : `Script exited with ${code ?? signal}`);
 			});
 			await new Promise<void>((resolve, reject) => {
@@ -297,7 +338,9 @@ export class ForkManager {
 	private finishRun(run: RunRecord, status: ForkStatus, error?: string): Promise<void> {
 		if (run.finishing) return run.finishing;
 		run.error = error;
+		clearInterval(run.outputTimer);
 		run.finishing = Promise.resolve().then(async () => {
+			let chunk: LiveChunk | undefined;
 			try {
 				const cleanup = await Promise.allSettled([
 					stopProcessTree(run.process, run.pid),
@@ -305,6 +348,8 @@ export class ForkManager {
 				]);
 				const failure = cleanup.find((result) => result.status === "rejected");
 				if (failure) throw failure.reason;
+				run.readOutput?.();
+				chunk = run.output?.finish();
 				const output = [run.stdoutPath, run.stderrPath].map((path) => {
 					let file: number;
 					try {
@@ -336,6 +381,17 @@ export class ForkManager {
 			} catch (error) {
 				run.status = "failed";
 				run.error = `Run cleanup failed: ${errorText(error)}`;
+			} finally {
+				run.output?.dispose();
+				if (run.outputFile !== undefined) closeSync(run.outputFile);
+				run.output = undefined;
+				run.outputFile = undefined;
+				run.readOutput = undefined;
+			}
+			if (!this.shuttingDown && run.delivery === "live" && (run.status !== "stopped" || chunk?.text)) {
+				this.options.onOutput?.(this.snapshot(run), {
+					text: "", startsWithContinuation: false, endsWithPartialLine: false, ...chunk, streamEnded: run.status !== "stopped",
+				});
 			}
 			this.settle(run);
 		});
@@ -345,7 +401,9 @@ export class ForkManager {
 	private settle(job: JobRecord): void {
 		for (const done of job.waiters) done();
 		this.options.onUpdate();
-		if (!this.shuttingDown && (job.kind === "run" || !job.runId)) this.options.onSettled(this.snapshot(job));
+		if (!this.shuttingDown && (job.kind === "run" ? job.delivery === "aggregate" : !job.runId)) {
+			this.options.onSettled(this.snapshot(job));
+		}
 	}
 
 	private require(id: string): JobRecord {
@@ -377,9 +435,9 @@ export class ForkManager {
 				...(lastOutput ? { lastOutput } : {}), ...(error ? { error } : {}),
 			};
 		}
-		const { kind, id, argv, cwd, childIds, stdoutPath, stderrPath, status, pid, exitCode, lastOutput, outputTruncated, error } = job;
-		return { kind, id, argv: [...argv], cwd, childIds: [...childIds], stdoutPath, stderrPath, status,
-			...(pid ? { pid } : {}), ...(exitCode !== undefined ? { exitCode } : {}),
+		const { kind, delivery, id, argv, cwd, childIds, stdoutPath, stderrPath, status, pid, exitCode, signal, lastOutput, outputTruncated, error } = job;
+		return { kind, delivery, id, argv: [...argv], cwd, childIds: [...childIds], stdoutPath, stderrPath, status,
+			...(pid ? { pid } : {}), ...(exitCode !== undefined ? { exitCode } : {}), ...(signal ? { signal } : {}),
 			...(lastOutput ? { lastOutput } : {}), ...(outputTruncated ? { outputTruncated } : {}), ...(error ? { error } : {}),
 		};
 	}
