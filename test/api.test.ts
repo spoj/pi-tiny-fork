@@ -1,6 +1,6 @@
 import { connect } from "node:net";
-import { existsSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { startApi, type ChildRequest } from "../src/api.ts";
 
@@ -209,6 +209,27 @@ describe("local API transport", () => {
 			expect(response.data.task).toBe("héllo 終 🎉 \n tab\there");
 		} finally {
 			await api.close();
+		}
+	});
+
+	it.skipIf(process.platform === "win32")("uses a short socket path when TMPDIR is too long", async () => {
+		const root = mkdtempSync(join("/tmp", "pi-child-long-tmp-"));
+		const longTmp = join(root, "x".repeat(85));
+		mkdirSync(longTmp, { recursive: true });
+		const previous = process.env.TMPDIR;
+		process.env.TMPDIR = longTmp;
+		try {
+			const api = await startApi(async () => "ok");
+			try {
+				expect(api.endpoint).not.toContain(longTmp);
+				expect(Buffer.byteLength(api.endpoint)).toBeLessThan(100);
+			} finally {
+				await api.close();
+			}
+		} finally {
+			if (previous === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previous;
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
