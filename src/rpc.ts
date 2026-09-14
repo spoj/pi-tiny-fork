@@ -1,5 +1,5 @@
 import { StringDecoder } from "node:string_decoder";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { getPackageDir, type JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
@@ -38,29 +38,8 @@ export type ChildExit = {
 export type ChildEventListener = (event: RpcEvent) => void;
 export type ChildExitListener = (exit: ChildExit) => void;
 
-function isPackageCli(path: string, packageDir: string): boolean {
-	let actual: string;
-	try {
-		actual = realpathSync(path);
-	} catch {
-		return false;
-	}
-	return [join(packageDir, "dist", "bundle", "cli.js"), join(packageDir, "dist", "cli.js")].some((candidate) => {
-		try {
-			return realpathSync(candidate) === actual;
-		} catch {
-			return false;
-		}
-	});
-}
-
 export function piInvocation(args: string[]): { command: string; args: string[] } {
-	const currentScript = process.argv[1];
 	const packageDir = getPackageDir();
-	if (currentScript && isPackageCli(currentScript, packageDir)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
-	}
-
 	const bundledCli = join(packageDir, "dist", "bundle", "cli.js");
 	if (existsSync(bundledCli)) return { command: process.execPath, args: [bundledCli, ...args] };
 	const cli = join(packageDir, "dist", "cli.js");

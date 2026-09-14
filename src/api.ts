@@ -32,16 +32,6 @@ function fail(socket: Socket, error: string): void {
 	}
 }
 
-function createUnixSocketPath(): { dir: string; endpoint: string } {
-	for (const root of new Set([tmpdir(), "/tmp"])) {
-		const dir = mkdtempSync(join(root, "pi-child-"));
-		const endpoint = join(dir, "api.sock");
-		if (Buffer.byteLength(endpoint) < MAX_UNIX_SOCKET_PATH_BYTES) return { dir, endpoint };
-		rmSync(dir, { recursive: true, force: true });
-	}
-	throw new Error("Could not create a short Unix socket path");
-}
-
 function validateOp(value: Record<string, unknown>): ChildRequest {
 	if (typeof value.op !== "string") throw new Error("invalid op");
 	if (!Object.hasOwn(FIELDS, value.op)) throw new Error("unknown op");
@@ -96,9 +86,9 @@ export async function startApi(
 	if (process.platform === "win32") {
 		endpoint = `\\\\.\\pipe\\pi-child-${randomUUID()}`;
 	} else {
-		const socketPath = createUnixSocketPath();
-		dir = socketPath.dir;
-		endpoint = socketPath.endpoint;
+		const root = Buffer.byteLength(join(tmpdir(), "pi-child-XXXXXX", "api.sock")) < MAX_UNIX_SOCKET_PATH_BYTES ? tmpdir() : "/tmp";
+		dir = mkdtempSync(join(root, "pi-child-"));
+		endpoint = join(dir, "api.sock");
 	}
 
 	server.on("connection", (socket: Socket) => {
