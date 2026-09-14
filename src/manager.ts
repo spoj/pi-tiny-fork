@@ -322,8 +322,13 @@ export class ForkManager {
 						let start = 0;
 						// A truncated tail can start inside a UTF-8 character.
 						while (start < length && (buffer[start] & 0xc0) === 0x80) start++;
-						const lines = buffer.subarray(start, length).toString("utf8").split("\n");
-						return { text: lines.slice(-2000).join("\n"), truncated: size > buffer.length || lines.length > 2000 };
+						const text = buffer.subarray(start, length).toString("utf8");
+						const trailingNewline = text.endsWith("\n");
+						const lines = text.split("\n");
+						const contentLines = trailingNewline ? lines.slice(0, -1) : lines;
+						const truncatedByLines = contentLines.length > 2000;
+						const preview = contentLines.slice(-2000).join("\n") + (trailingNewline ? "\n" : "");
+						return { text: preview, truncated: size > buffer.length || truncatedByLines };
 					} finally { closeSync(file); }
 				});
 				run.lastOutput = output[0].text || undefined;

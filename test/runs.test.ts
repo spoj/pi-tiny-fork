@@ -191,6 +191,17 @@ describe("script runs through the shared extension and CLI", () => {
 		expect(readFileSync(result.stdoutPath).length).toBe(60_004);
 	}, 15_000);
 
+	it.each([1999, 2000, 2001])("keeps newline-terminated preview lines at the %s-line boundary", async (lineCount) => {
+		const { call } = await setup();
+		const run = await call(["run", "--", process.execPath, "-e", `process.stdout.write(Array.from({length:${lineCount}}, (_, i) => \`line-\${i + 1}\`).join("\\n") + "\\n")`]);
+		const result = await call(["result", run.id, "--wait"]);
+		const firstLine = lineCount > 2000 ? 2 : 1;
+		const expected = Array.from({ length: Math.min(lineCount, 2000) }, (_, i) => `line-${lineCount > 2000 ? lineCount - 1999 + i : i + 1}`).join("\n") + "\n";
+		expect(result.lastOutput).toBe(expected);
+		expect(result.outputTruncated ?? false).toBe(lineCount > 2000);
+		expect(result.lastOutput.split("\n")[0]).toBe(`line-${firstLine}`);
+	}, 15_000);
+
 	it("reports script failure and failed executable startup once each", async () => {
 		const { directory, pi, call } = await setup();
 		const run = await call(["run", "--", process.execPath, "-e", "console.log('partial'); console.error('diagnostic'); process.exit(3)"]);
