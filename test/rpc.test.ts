@@ -32,7 +32,7 @@ describe("RPC child", () => {
 	it("resolves the bundled Pi CLI from the package", () => {
 		const directory = mkdtempSync(join(tmpdir(), "pi-package-"));
 		try {
-			const cli = useFakePi(directory, process.execPath);
+			const cli = useFakePi(directory, import.meta.filename);
 			expect(piInvocation(["--mode", "rpc"])).toEqual({ command: process.execPath, args: [cli, "--mode", "rpc"] });
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
