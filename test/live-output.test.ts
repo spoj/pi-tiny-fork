@@ -112,6 +112,15 @@ describe("LiveOutput", () => {
 		expect(chunks).toHaveLength(1);
 	});
 
+	it("bounds decoded output that expands beyond the byte batch limit", () => {
+		const { live, chunks } = output();
+
+		live.append(Buffer.alloc(50 * 1024, 0xff));
+		expect(chunks).toHaveLength(1);
+		expect(chunks[0]).toMatchObject({ suppressed: true });
+		expect(live.finish()).toBeUndefined();
+	});
+
 	it("limits visible newlines on a rolling window", () => {
 		const { live, chunks } = output();
 
@@ -125,11 +134,27 @@ describe("LiveOutput", () => {
 		expect(chunks[1]).toMatchObject({ suppressed: true });
 	});
 
+	it("ends an OSC on BEL after a split ESC", () => {
+		const { live } = output();
+
+		live.append(Buffer.from("before\x1b]title\x1b"));
+		live.append(Buffer.from("\x07visible"));
+
+		expect(live.finish()).toEqual({ text: "beforevisible", startsWithContinuation: false, endsWithPartialLine: true });
+	});
+
 	it("does not count newlines inside terminal strings", () => {
 		const { live } = output();
 
 		live.append(Buffer.from("\x1b]title\n".repeat(501) + "visible\x07done"));
 		expect(live.finish()).toEqual({ text: "done", startsWithContinuation: false, endsWithPartialLine: true });
+	});
+
+	it("lets a C1 OSC interrupt an incomplete CSI", () => {
+		const { live } = output();
+
+		live.append(Buffer.from("before\x1b[12\u009dhidden\n\u0007after"));
+		expect(live.finish()).toEqual({ text: "beforeafter", startsWithContinuation: false, endsWithPartialLine: true });
 	});
 
 	it("does not limit a partial line across timed chunks", () => {

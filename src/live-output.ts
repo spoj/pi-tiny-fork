@@ -89,6 +89,10 @@ export class LiveOutput {
 	}
 
 	private accept(text: string): void {
+		if (Buffer.byteLength(this.pending, "utf8") + Buffer.byteLength(text, "utf8") > RAW_BATCH_LIMIT) {
+			this.suppress("Live output suppressed: output limit exceeded.");
+			return;
+		}
 		const now = Date.now();
 		this.newlineTimes = this.newlineTimes.filter((time) => now - time < NEWLINE_WINDOW_MS);
 		let newlines = 0;
@@ -140,6 +144,7 @@ export class LiveOutput {
 				case "csi":
 					if (code === 0x1b) this.sanitizerState = "escape";
 					else if (code === 0x9b) this.sanitizerState = "csi";
+					else if (code === 0x9d) this.sanitizerState = "osc";
 					else if (code >= 0x40 && code <= 0x7e) this.sanitizerState = "text";
 					break;
 				case "osc":
@@ -147,7 +152,7 @@ export class LiveOutput {
 					else if (code === 0x1b) this.sanitizerState = "oscEscape";
 					break;
 				case "oscEscape":
-					if (code === 0x5c || code === 0x9c) this.sanitizerState = "text";
+					if (code === 0x07 || code === 0x5c || code === 0x9c) this.sanitizerState = "text";
 					else if (code !== 0x1b) this.sanitizerState = "osc";
 					break;
 			}
