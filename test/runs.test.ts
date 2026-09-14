@@ -171,6 +171,23 @@ describe("script runs through the shared extension and CLI", () => {
 		expect((await call(["result", result.childIds[0]])).status).toBe("stopped");
 	}, 15_000);
 
+	it("keeps live script children in the same run and cleans them on script exit", async () => {
+		const { call, script } = await setup();
+		const root = script("live-ownership", `
+			const child = await call("start", "--task", "hang live child", "--model", "test/fake", "--thinking", "off");
+			console.log(JSON.stringify(child));
+		`);
+		const run: RunSnapshot = await call(["run", "--stream", "--", process.execPath, root]);
+		expect(run).toMatchObject({ kind: "run", delivery: "live", status: "running" });
+
+		const result: RunSnapshot = await call(["result", run.id, "--wait"]);
+		expect(result).toMatchObject({ kind: "run", delivery: "live", status: "completed", childIds: [expect.any(String)] });
+		const child: ForkSnapshot = JSON.parse(result.lastOutput!);
+		expect(child).toMatchObject({ kind: "child", runId: run.id, status: "running" });
+		expect(result.childIds).toEqual([child.id]);
+		expect((await call(["result", child.id])).status).toBe("stopped");
+	}, 15_000);
+
 	it("rejects nested runs and retains bounded output with full logs", async () => {
 		const { call, script } = await setup();
 		const root = script("nested", `
