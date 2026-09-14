@@ -11,7 +11,6 @@ const cleanups: Array<() => Promise<void>> = [];
 
 async function setup() {
 	const directory = mkdtempSync(join(tmpdir(), "pi-child-runs-"));
-	const originalScript = process.argv[1];
 	vi.stubEnv("PI_FORK_CHILD", "");
 	const packageDir = join(directory, "pi-package");
 	const fakePi = join(packageDir, "dist", "bundle", "cli.js");
@@ -45,7 +44,6 @@ async function setup() {
 			return JSON.parse(stdout);
 		};
 	`);
-	process.argv[1] = fakePi;
 	const { default: extension } = await import("../src/index.ts");
 	const pi = { on: vi.fn(), registerTool: vi.fn(), sendMessage: vi.fn() };
 	const ctx = { cwd: directory, sessionManager: { getSessionDir: () => join(directory, "sessions") }, ui: { setWidget: vi.fn() } };
@@ -54,7 +52,6 @@ async function setup() {
 	const close = async () => { await hook("session_shutdown")({}, ctx); };
 	cleanups.push(async () => {
 		await close();
-		process.argv[1] = originalScript;
 		rmSync(directory, { recursive: true, force: true });
 	});
 	await hook("session_start")({}, ctx);

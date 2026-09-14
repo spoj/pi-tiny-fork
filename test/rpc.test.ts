@@ -1,5 +1,4 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -71,10 +70,9 @@ describe("RPC child", () => {
 				}, 20);
 			});
 		`);
-		const originalScript = process.argv[1];
 		const child = new RpcChild(directory, sessionFile, { model: "provider/family/model", thinkingLevel: "high" });
 		try {
-			process.argv[1] = useFakePi(directory, script);
+			useFakePi(directory, script);
 			const starting = child.start().then(() => child.prompt("work"));
 			if (failure) await expect(starting).rejects.toThrow("configuration failed");
 			else await starting;
@@ -91,7 +89,6 @@ describe("RPC child", () => {
 			);
 		} finally {
 			await child.stop();
-			process.argv[1] = originalScript;
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
@@ -101,12 +98,10 @@ describe("RPC child", () => {
 		writeFileSync(join(directory, "auth.json"), JSON.stringify({ openai: { type: "api_key", key: "test-key" } }));
 		writeFileSync(join(directory, "settings.json"), JSON.stringify({ defaultProvider: "openai", defaultModel: "gpt-5-mini", defaultThinkingLevel: "low" }));
 		const sessionFile = createForkSession(directory, join(directory, "transcripts"));
-		const originalScript = process.argv[1];
 		const child = new RpcChild(directory, sessionFile, { model: "openai/gpt-5", thinkingLevel });
 		try {
 			vi.stubEnv("PI_CODING_AGENT_DIR", directory);
 			vi.stubEnv("PI_OFFLINE", "1");
-			process.argv[1] = fileURLToPath(new URL("./cli.js", import.meta.resolve("@earendil-works/pi-coding-agent")));
 			await child.start();
 			expect(await (child as unknown as RpcChildInternals).request({ type: "get_state" })).toMatchObject({
 				model: { provider: "openai", id: "gpt-5" }, thinkingLevel, messageCount: 0,
@@ -117,8 +112,6 @@ describe("RPC child", () => {
 			});
 		} finally {
 			await child.stop();
-			process.argv[1] = originalScript;
-			vi.unstubAllEnvs();
 			rmSync(directory, { recursive: true, force: true });
 		}
 	}, 15_000);
@@ -135,19 +128,16 @@ describe("RPC child", () => {
 			}));
 			process.stdin.resume();
 		`);
-		const originalScript = process.argv[1];
 		const child = new RpcChild(directory, join(directory, "session.jsonl"));
 		try {
 			for (const key of ["PI_CHILD_ENDPOINT", "PI_CHILD_TOKEN", "PI_CHILD_RUN_ID", "PI_CHILD_CLI", "PI_CHILD_NODE", "pi_child_extra"]) vi.stubEnv(key, "private");
 			vi.stubEnv("FORK_TEST_SETTING", "preserved");
-			process.argv[1] = useFakePi(directory, script);
+			useFakePi(directory, script);
 			await child.start();
 			await expect.poll(() => existsSync(log)).toBe(true);
 			expect(JSON.parse(readFileSync(log, "utf8"))).toEqual({ child: "1", keys: [], normal: "preserved" });
 		} finally {
 			await child.stop();
-			process.argv[1] = originalScript;
-			vi.unstubAllEnvs();
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
@@ -156,10 +146,9 @@ describe("RPC child", () => {
 		const directory = mkdtempSync(join(tmpdir(), "pi-tiny-fork-start-"));
 		const script = join(directory, "child.cjs");
 		writeFileSync(script, "setInterval(() => {}, 1000);");
-		const originalScript = process.argv[1];
 		const child = new RpcChild(directory, join(directory, "session.jsonl"));
 		try {
-			process.argv[1] = useFakePi(directory, script);
+			useFakePi(directory, script);
 			const starting = child.start();
 			const stopping = child.stop();
 			await starting;
@@ -167,7 +156,6 @@ describe("RPC child", () => {
 			await expect.poll(() => { try { process.kill(child.getPid(), 0); return true; } catch { return false; } }).toBe(false);
 		} finally {
 			await child.stop();
-			process.argv[1] = originalScript;
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
@@ -354,10 +342,9 @@ describe("RPC child", () => {
 			].join(" "),
 		);
 
-		const originalScript = process.argv[1];
 		let child: RpcChild | undefined;
 		try {
-			process.argv[1] = useFakePi(directory, script);
+			useFakePi(directory, script);
 			child = new RpcChild(directory, join(directory, "session.jsonl"));
 			const exited = new Promise<void>((resolve) => child!.onExit(() => resolve()));
 			await child.start();
@@ -368,7 +355,6 @@ describe("RPC child", () => {
 			expect(existsSync(marker)).toBe(false);
 		} finally {
 			await child?.stop();
-			process.argv[1] = originalScript;
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
