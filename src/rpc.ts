@@ -1,8 +1,8 @@
 import { StringDecoder } from "node:string_decoder";
-import { existsSync } from "node:fs";
-import { basename } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { basename, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
-import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { getPackageDir, type JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ForkLaunchOptions } from "./fork-settings.ts";
 import { stopProcessTree } from "./process.ts";
 
@@ -38,11 +38,31 @@ export type ChildExit = {
 export type ChildEventListener = (event: RpcEvent) => void;
 export type ChildExitListener = (exit: ChildExit) => void;
 
-function piInvocation(args: string[]): { command: string; args: string[] } {
+function isPackageCli(path: string, packageDir: string): boolean {
+	let actual: string;
+	try {
+		actual = realpathSync(path);
+	} catch {
+		return false;
+	}
+	return [join(packageDir, "dist", "bundle", "cli.js"), join(packageDir, "dist", "cli.js")].some((candidate) => {
+		try {
+			return realpathSync(candidate) === actual;
+		} catch {
+			return false;
+		}
+	});
+}
+
+export function piInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
-	if (currentScript && !currentScript.startsWith("/$bunfs/root/") && existsSync(currentScript)) {
+	const packageDir = getPackageDir();
+	if (currentScript && isPackageCli(currentScript, packageDir)) {
 		return { command: process.execPath, args: [currentScript, ...args] };
 	}
+
+	const bundledCli = join(packageDir, "dist", "bundle", "cli.js");
+	if (existsSync(bundledCli)) return { command: process.execPath, args: [bundledCli, ...args] };
 
 	const executable = basename(process.execPath).toLowerCase();
 	if (executable === "node" || executable === "node.exe" || executable === "bun" || executable === "bun.exe") {

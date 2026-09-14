@@ -1,10 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
-import { RpcChild, type ChildExit } from "../src/rpc.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { piInvocation, RpcChild, type ChildExit } from "../src/rpc.ts";
 import { createForkSession } from "../src/fork.ts";
 
 type RpcChildInternals = {
@@ -18,7 +18,28 @@ type RpcChildInternals = {
 	request: (command: Record<string, unknown>) => Promise<unknown>;
 };
 
+function useFakePi(directory: string, script: string): string {
+	const packageDir = join(directory, "pi-package");
+	const entrypoint = join(packageDir, "dist", "bundle", "cli.js");
+	mkdirSync(join(packageDir, "dist", "bundle"), { recursive: true });
+	copyFileSync(script, entrypoint);
+	vi.stubEnv("PI_PACKAGE_DIR", packageDir);
+	return entrypoint;
+}
+
+afterEach(() => vi.unstubAllEnvs());
+
 describe("RPC child", () => {
+	it("does not re-execute a Node SDK host entrypoint", () => {
+		const originalScript = process.argv[1];
+		const host = join(tmpdir(), "pi-tiny-fork-sdk-host.mjs");
+		try {
+			process.argv[1] = host;
+			expect(piInvocation(["--mode", "rpc"]).args).not.toContain(host);
+		} finally {
+			process.argv[1] = originalScript;
+		}
+	});
 	it.each(["gpt-5", "/gpt-5", "openai/"])("rejects a model without provider/model-id: %s", async (model) => {
 		const child = new RpcChild("/tmp", "/tmp/session.jsonl", { model, thinkingLevel: "high" });
 		await expect(child.start()).rejects.toThrow("exact provider/model-id");
@@ -49,7 +70,7 @@ describe("RPC child", () => {
 		const originalScript = process.argv[1];
 		const child = new RpcChild(directory, sessionFile, { model: "provider/family/model", thinkingLevel: "high" });
 		try {
-			process.argv[1] = script;
+			process.argv[1] = useFakePi(directory, script);
 			const starting = child.start().then(() => child.prompt("work"));
 			if (failure) await expect(starting).rejects.toThrow("configuration failed");
 			else await starting;
@@ -115,7 +136,7 @@ describe("RPC child", () => {
 		try {
 			for (const key of ["PI_CHILD_ENDPOINT", "PI_CHILD_TOKEN", "PI_CHILD_RUN_ID", "PI_CHILD_CLI", "PI_CHILD_NODE", "pi_child_extra"]) vi.stubEnv(key, "private");
 			vi.stubEnv("FORK_TEST_SETTING", "preserved");
-			process.argv[1] = script;
+			process.argv[1] = useFakePi(directory, script);
 			await child.start();
 			await expect.poll(() => existsSync(log)).toBe(true);
 			expect(JSON.parse(readFileSync(log, "utf8"))).toEqual({ child: "1", keys: [], normal: "preserved" });
@@ -134,7 +155,7 @@ describe("RPC child", () => {
 		const originalScript = process.argv[1];
 		const child = new RpcChild(directory, join(directory, "session.jsonl"));
 		try {
-			process.argv[1] = script;
+			process.argv[1] = useFakePi(directory, script);
 			const starting = child.start();
 			const stopping = child.stop();
 			await starting;
@@ -332,7 +353,7 @@ describe("RPC child", () => {
 		const originalScript = process.argv[1];
 		let child: RpcChild | undefined;
 		try {
-			process.argv[1] = script;
+			process.argv[1] = useFakePi(directory, script);
 			child = new RpcChild(directory, join(directory, "session.jsonl"));
 			const exited = new Promise<void>((resolve) => child!.onExit(() => resolve()));
 			await child.start();

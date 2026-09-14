@@ -13,7 +13,10 @@ async function setup() {
 	const directory = mkdtempSync(join(tmpdir(), "pi-child-runs-"));
 	const originalScript = process.argv[1];
 	vi.stubEnv("PI_FORK_CHILD", "");
-	const fakePi = join(directory, "fake-pi.cjs");
+	const packageDir = join(directory, "pi-package");
+	const fakePi = join(packageDir, "dist", "bundle", "cli.js");
+	mkdirSync(join(packageDir, "dist", "bundle"), { recursive: true });
+	vi.stubEnv("PI_PACKAGE_DIR", packageDir);
 	writeFileSync(fakePi, `
 		let buffer = "";
 		process.stdin.setEncoding("utf8");
