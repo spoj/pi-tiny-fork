@@ -44,7 +44,6 @@ export type JobSnapshot = ForkSnapshot | RunSnapshot;
 export type ForkStartOptions = ForkLaunchOptions & { task: string; cwd?: string; runId?: string };
 
 type Completion = {
-	settled: boolean;
 	waiters: Set<() => void>;
 	finishing?: Promise<void>;
 };
@@ -55,7 +54,7 @@ type ForkRecord = ForkSnapshot & Completion & {
 	lastStopReason?: string;
 };
 
-type RunRecord = RunSnapshot & Completion & { process?: ChildProcess; closed: boolean };
+type RunRecord = RunSnapshot & Completion & { process?: ChildProcess };
 type JobRecord = ForkRecord | RunRecord;
 
 type ManagerOptions = {
@@ -86,7 +85,7 @@ export class ForkManager {
 
 	async result(id: string, wait = false, signal?: AbortSignal): Promise<JobSnapshot> {
 		const job = this.require(id);
-		if (!job.settled) {
+		if (job.status === "starting" || job.status === "running") {
 			if (!wait) {
 				throw new Error(`${id} has not finished; use result --wait in a background script`);
 			}
@@ -111,7 +110,7 @@ export class ForkManager {
 	async start(options: ForkStartOptions): Promise<ForkSnapshot> {
 		if (this.shuttingDown) throw new Error("Fork manager is shutting down");
 		const run = options.runId === undefined ? undefined : this.requireRun(options.runId);
-		if (run?.closed) throw new Error(`Run ${run.id} is closed`);
+		if (run?.finishing) throw new Error(`Run ${run.id} is closed`);
 		const launchOptions = resolveForkOptions(options, loadForkDefaults());
 		if (!launchOptions.model?.trim()) {
 			throw new Error("Fork requires a model. Choose an exact provider/model-id or configure defaultForkModel.");
@@ -124,7 +123,7 @@ export class ForkManager {
 		const fork: ForkRecord = {
 			kind: "child", id, task: options.task, cwd, runId: run?.id,
 			transcriptPath: createForkSession(cwd, this.options.sessionDir, options.task),
-			launchOptions, status: "starting", turns: 0, settled: false, waiters: new Set(),
+			launchOptions, status: "starting", turns: 0, waiters: new Set(),
 		};
 		this.jobs.set(id, fork);
 		run?.childIds.push(id);
@@ -148,7 +147,7 @@ export class ForkManager {
 		const run: RunRecord = {
 			kind: "run", id, argv: [...argv], cwd: resolve(this.options.cwd, options.cwd ?? "."),
 			childIds: [], stdoutPath: join(directory, "stdout.log"), stderrPath: join(directory, "stderr.log"),
-			status: "starting", closed: false, settled: false, waiters: new Set(),
+			status: "starting", waiters: new Set(),
 		};
 		this.jobs.set(id, run);
 		this.options.onUpdate();
@@ -219,7 +218,7 @@ export class ForkManager {
 			});
 			run.process = child;
 			child.once("exit", (code, signal) => {
-				if (run.closed) return;
+				if (run.finishing) return;
 				run.exitCode = code ?? undefined;
 				void this.finishRun(run, code === 0 ? "completed" : "failed", code === 0 ? undefined : `Script exited with ${code ?? signal}`);
 			});
@@ -227,7 +226,7 @@ export class ForkManager {
 				child.once("spawn", resolve);
 				child.once("error", reject);
 			});
-			if (this.shuttingDown || run.closed) throw new Error("Run was stopped during startup");
+			if (this.shuttingDown || run.finishing) throw new Error("Run was stopped during startup");
 			run.pid = child.pid;
 			run.status = "running";
 			this.options.onUpdate();
@@ -297,7 +296,6 @@ export class ForkManager {
 
 	private finishRun(run: RunRecord, status: ForkStatus, error?: string): Promise<void> {
 		if (run.finishing) return run.finishing;
-		run.closed = true;
 		run.error = error;
 		run.finishing = Promise.resolve().then(async () => {
 			try {
@@ -345,7 +343,6 @@ export class ForkManager {
 	}
 
 	private settle(job: JobRecord): void {
-		job.settled = true;
 		for (const done of job.waiters) done();
 		this.options.onUpdate();
 		if (!this.shuttingDown && (job.kind === "run" || !job.runId)) this.options.onSettled(this.snapshot(job));
