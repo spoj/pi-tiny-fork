@@ -121,6 +121,14 @@ describe("LiveOutput", () => {
 		expect(live.finish()).toBeUndefined();
 	});
 
+	it("reports decoder expansion at EOF without emitting during finish", () => {
+		const { live, chunks } = output();
+		live.append(Buffer.concat([Buffer.alloc(50 * 1024 - 1, 0x61), Buffer.from([0xc2])]));
+		expect(live.finish()).toMatchObject({ suppressed: true });
+		expect(chunks).toEqual([]);
+		expect(live.finish()).toBeUndefined();
+	});
+
 	it("limits visible newlines on a rolling window", () => {
 		const { live, chunks } = output();
 

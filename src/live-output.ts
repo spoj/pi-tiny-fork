@@ -52,6 +52,10 @@ export class LiveOutput {
 		}
 
 		const visible = this.sanitize(this.decoder.end());
+		if (Buffer.byteLength(this.pending + visible, "utf8") > RAW_BATCH_LIMIT) {
+			this.dispose();
+			return { text: "Live output suppressed: output limit exceeded.", startsWithContinuation: false, endsWithPartialLine: false, suppressed: true };
+		}
 		if (visible) this.accept(visible);
 		this.sanitizerState = "text";
 
