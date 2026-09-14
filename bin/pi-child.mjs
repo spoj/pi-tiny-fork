@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 const HELP = `Usage: pi-child <command> [options]
 
 Commands:
-  run [--cwd DIR] -- COMMAND [ARGS...]
+  run [--cwd DIR] [--stream] -- COMMAND [ARGS...]
   start --task TEXT [--cwd DIR] [--model provider/id] [--thinking LEVEL]
   status [ID]
   result ID [--wait]
@@ -103,11 +103,12 @@ async function main() {
 		case "run": {
 			const dash = rest.indexOf("--");
 			if (dash === -1) fail("run requires -- COMMAND [ARGS...]");
-			const { values } = parsed(rest.slice(0, dash), { cwd: { type: "string" } }, false);
+			const { values } = parsed(rest.slice(0, dash), { cwd: { type: "string" }, stream: { type: "boolean" } }, false);
 			const argv = rest.slice(dash + 1);
 			if (argv.length === 0) fail("run requires -- COMMAND [ARGS...]");
 			const request = { op: "run", argv };
 			if (values.cwd !== undefined) request.cwd = values.cwd;
+			if (values.stream) request.delivery = "live";
 			await call(withRunId(request));
 			break;
 		}

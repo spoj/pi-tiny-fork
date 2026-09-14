@@ -58,6 +58,7 @@ describe("pi-child CLI", () => {
 		const help = await runCli(["--help"]);
 		expect(help.code).toBe(0);
 		expect(help.stdout).toContain("Usage: pi-child");
+		expect(help.stdout).toContain("--stream");
 		expect((await runCli(["-h"])).code).toBe(0);
 		expect((await runCli([])).code).toBe(1);
 		const bogus = await runCli(["bogus"]);
@@ -84,10 +85,13 @@ describe("pi-child CLI", () => {
 			for (const args of [
 				["start", "--task", "t", "--context", "full"],
 				["start", "--task", "t", "--batch"],
+				["start", "--task", "t", "--stream"],
 				["start"],
 				["start", "--task", "t", "--thinking", "huge"],
 				["run", "echo", "hi"],
 				["run", "--"],
+				["run", "--stream", "--"],
+				["run", "--stream", "--context", "full", "--", "true"],
 				["result"],
 				["stop"],
 				["steer", "id"],
@@ -129,12 +133,12 @@ describe("pi-child CLI", () => {
 			expect(result.code).toBe(0);
 			expect(seen[1]).toEqual({ op: "start", task: "plain" });
 
-			result = await runCli(["run", "--cwd", "/tmp", "--", "echo", "hi there", "終"], {
+			result = await runCli(["run", "--cwd", "/tmp", "--stream", "--", "echo", "hi there", "終"], {
 				...extra,
 				PI_CHILD_RUN_ID: "run-2",
 			});
 			expect(result.code).toBe(0);
-			expect(seen[2]).toEqual({ op: "run", argv: ["echo", "hi there", "終"], cwd: "/tmp", runId: "run-2" });
+			expect(seen[2]).toEqual({ op: "run", argv: ["echo", "hi there", "終"], cwd: "/tmp", runId: "run-2", delivery: "live" });
 
 			result = await runCli(["run", "--", "true"], extra);
 			expect(result.code).toBe(0);

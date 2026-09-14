@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Socket } from "node:net";
 
+export type RunDelivery = "aggregate" | "live";
+
 export type ChildRequest =
 	| { op: "start"; task: string; cwd?: string; model?: string; thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"; runId?: string }
-	| { op: "run"; argv: string[]; cwd?: string; runId?: string }
+	| { op: "run"; argv: string[]; cwd?: string; runId?: string; delivery?: RunDelivery }
 	| { op: "status"; id?: string }
 	| { op: "result"; id: string; wait?: boolean }
 	| { op: "steer"; id: string; prompt: string }
@@ -15,9 +17,10 @@ export type ChildRequest =
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_UNIX_SOCKET_PATH_BYTES = 100;
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const RUN_DELIVERIES = new Set<RunDelivery>(["aggregate", "live"]);
 const FIELDS: Record<string, Set<string>> = {
 	start: new Set(["task", "cwd", "model", "thinkingLevel", "runId"]),
-	run: new Set(["argv", "cwd", "runId"]),
+	run: new Set(["argv", "cwd", "runId", "delivery"]),
 	status: new Set(["id"]),
 	result: new Set(["id", "wait"]),
 	steer: new Set(["id", "prompt"]),
@@ -55,6 +58,9 @@ function validateOp(value: Record<string, unknown>): ChildRequest {
 			}
 			if (value.cwd !== undefined && typeof value.cwd !== "string") throw new Error("invalid cwd");
 			if (value.runId !== undefined && (typeof value.runId !== "string" || value.runId.length === 0)) throw new Error("invalid runId");
+			if (value.delivery !== undefined && (typeof value.delivery !== "string" || !RUN_DELIVERIES.has(value.delivery as RunDelivery))) {
+				throw new Error("invalid delivery");
+			}
 			return value as unknown as ChildRequest;
 		case "status":
 			if (value.id !== undefined && typeof value.id !== "string") throw new Error("invalid id");

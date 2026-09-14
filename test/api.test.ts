@@ -57,7 +57,7 @@ describe("local API transport", () => {
 		try {
 			const requests: Record<string, unknown>[] = [
 				{ op: "start", task: "work", cwd: "/tmp", model: "p/m", thinkingLevel: "high", runId: "r1" },
-				{ op: "run", argv: ["echo", "hi"], cwd: "/tmp", runId: "r1" },
+				{ op: "run", argv: ["echo", "hi"], cwd: "/tmp", runId: "r1", delivery: "live" },
 				{ op: "status" },
 				{ op: "status", id: "a" },
 				{ op: "result", id: "a", wait: true },
@@ -126,6 +126,9 @@ describe("local API transport", () => {
 				{ op: "run", argv: [] },
 				{ op: "run", argv: [""] },
 				{ op: "run", argv: "echo" },
+				{ op: "run", argv: ["echo"], delivery: "stream" },
+				{ op: "run", argv: ["echo"], delivery: null },
+				{ op: "run", argv: ["echo"], stdin: "private" },
 				{ op: "result" },
 				{ op: "result", id: "a", wait: "yes" },
 				{ op: "steer", id: "a" },

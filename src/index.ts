@@ -3,14 +3,21 @@ import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { truncateHead, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ForkManager, type JobSnapshot } from "./manager.ts";
-import { startApi } from "./api.ts";
+import {
+	getShellConfig,
+	SettingsManager,
+	truncateHead,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import { ForkManager, type JobSnapshot, type RunSnapshot } from "./manager.ts";
+import type { LiveChunk } from "./live-output.ts";
+import { startApi, type ChildRequest } from "./api.ts";
 import { THINKING_LEVELS } from "./fork-settings.ts";
 
 const CHILD_PROCESS = process.env.PI_FORK_CHILD === "1";
 const WIDGET_KEY = "pi-tiny-fork";
-const DELEGATION_SYSTEM_PROMPT = `Make every fork task self-contained. Use configured model/thinking defaults unless an override is needed. Never wait for child or run results in the parent turn. For scripted delegation, \`pi-child run -- COMMAND\` returns immediately and sends one aggregate result; its script uses \`pi-child start\` and \`pi-child result ID --wait\`. Invoke the CLI portably as \`"$PI_CHILD_NODE" "$PI_CHILD_CLI"\`; see \`pi-child --help\`.`;
+const DELEGATION_SYSTEM_PROMPT = `Make every fork task self-contained. Use configured model/thinking defaults unless an override is needed. Never wait for child or run results in the parent turn. For scripted delegation, \`pi-child run -- COMMAND\` returns immediately and sends one aggregate result; its script uses \`pi-child start\` and \`pi-child result ID --wait\`. Use \`pi-child run --stream -- COMMAND\` when timed stdout updates should be delivered to the parent. Invoke the CLI portably as \`"$PI_CHILD_NODE" "$PI_CHILD_CLI"\`; see \`pi-child --help\`.`;
 
 const forkTool = Type.Object({
 	task: Type.String({ description: "Self-contained task for the child" }),
@@ -39,6 +46,14 @@ const stopTool = Type.Object({
 	id: Type.String({ description: "Child or run ID" }),
 });
 
+const monitorTool = Type.Object({
+	command: Type.String({ minLength: 1, description: "Shell command to run in the background" }),
+});
+
+const monitorStopTool = Type.Object({
+	id: Type.String({ minLength: 1, description: "Running monitor ID" }),
+});
+
 function renderWidget(ctx: ExtensionContext, manager: ForkManager): void {
 	const active = manager.list().filter((job) => job.status === "starting" || job.status === "running");
 	const children = active.filter((job) => job.kind === "child").length;
@@ -47,7 +62,7 @@ function renderWidget(ctx: ExtensionContext, manager: ForkManager): void {
 
 function resultText(job: JobSnapshot): string {
 	const output = job.lastOutput?.trim();
-	const text = [
+	const lines = [
 		`${job.kind === "child" ? "Fork" : "Run"} ${job.status}.`,
 		"",
 		`ID: ${job.id}`,
@@ -58,11 +73,28 @@ function resultText(job: JobSnapshot): string {
 		output ? `Result:\n${output}` : "Result: (no final output; inspect the saved files)",
 		...(job.kind === "run" && job.outputTruncated ? ["Output truncated; full output is in the saved logs."] : []),
 	].join("\n");
-	const truncated = truncateHead(text);
+	const truncated = truncateHead(lines);
 	return truncated.content + (truncated.truncated ? "\nOutput truncated; inspect the saved files for the full result." : "");
 }
 
-function registerTools(pi: ExtensionAPI, manager: ForkManager): void {
+function liveText(run: RunSnapshot, chunk: LiveChunk & { streamEnded?: boolean }): string {
+	const flags = [
+		chunk.startsWithContinuation ? "continues previous line" : undefined,
+		chunk.endsWithPartialLine ? "last line incomplete" : undefined,
+	].filter((flag): flag is string => flag !== undefined);
+	if (chunk.suppressed) {
+		flags.push(`suppressed: ${chunk.text}`, `stdout log: ${run.stdoutPath}`);
+	}
+	if (chunk.streamEnded) {
+		flags.push(`status: ${run.status}`);
+		if (run.exitCode !== undefined) flags.push(`exit code: ${run.exitCode}`);
+		if (run.signal !== undefined) flags.push(`signal: ${run.signal}`);
+		flags.push(`stdout: ${run.stdoutPath}`, `stderr: ${run.stderrPath}`);
+	}
+	return `[${[run.id, ...flags].join(" · ")}]\n${chunk.text}`;
+}
+
+function registerForkTools(pi: ExtensionAPI, manager: ForkManager): void {
 	pi.registerTool({
 		name: "Fork",
 		label: "Fork",
@@ -134,19 +166,72 @@ function registerTools(pi: ExtensionAPI, manager: ForkManager): void {
 	});
 }
 
+function registerMonitorTools(pi: ExtensionAPI, manager: ForkManager): void {
+	pi.registerTool({
+		name: "monitor",
+		label: "Monitor",
+		description: "Runs a background shell command and delivers bounded stdout updates while it runs, then a final status.",
+		promptSnippet: "Run a background shell command with live stdout updates",
+		promptGuidelines: [
+			"Use monitor for long-running or noisy shell commands when the current turn should remain available.",
+			"Monitor output arrives in timed chunks; chunk boundaries are not newline boundaries. Use the continuation and incomplete-line headers, and read the saved stdout log for complete output.",
+			"Monitor streams stdout only. Stderr is retained in the saved stderr log and does not wake the agent.",
+		],
+		parameters: monitorTool,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
+			const shell = getShellConfig(settings.getShellPath());
+			const prefix = settings.getShellCommandPrefix();
+			const command = prefix ? `${prefix}\n${params.command}` : params.command;
+			const run = await manager.run(
+				shell.commandTransport === "stdin" ? [shell.shell, ...shell.args] : [shell.shell, ...shell.args, command],
+				{
+					cwd: ctx.cwd,
+					delivery: "live",
+					...(shell.commandTransport === "stdin" ? { stdin: command } : {}),
+				},
+			);
+			return {
+				content: [{ type: "text", text: `Monitor started.\n\nID: ${run.id}\nStdout: ${run.stdoutPath}\nStderr: ${run.stderrPath}` }],
+				details: run,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "monitor_stop",
+		label: "Monitor Stop",
+		description: "Stops a running monitor by ID.",
+		parameters: monitorStopTool,
+		async execute(_toolCallId, params) {
+			const job = manager.status(params.id);
+			if (job.kind !== "run") throw new Error(`${params.id} is not a monitor run`);
+			const stopped = await manager.stop(params.id);
+			return { content: [{ type: "text", text: `Monitor stopped.\n\nID: ${stopped.id}` }], details: stopped };
+		},
+	});
+}
+
 export default function piTinyFork(pi: ExtensionAPI): void {
-	if (CHILD_PROCESS) return;
 	let shutdown: (() => Promise<void>) | undefined;
 
-	pi.on("before_agent_start", (event) => ({
-		systemPrompt: `${event.systemPrompt}\n\n${DELEGATION_SYSTEM_PROMPT}`,
-	}));
+	if (!CHILD_PROCESS) {
+		pi.on("before_agent_start", (event) => ({
+			systemPrompt: `${event.systemPrompt}\n\n${DELEGATION_SYSTEM_PROMPT}`,
+		}));
+	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		const manager = new ForkManager({
 			cwd: ctx.cwd,
 			sessionDir: ctx.sessionManager.getSessionDir(),
 			onUpdate: () => renderWidget(ctx, manager),
+			onOutput: (run, chunk) => {
+				pi.sendMessage(
+					{ customType: "pi-tiny-fork", content: liveText(run, chunk), display: true },
+					{ deliverAs: "steer", triggerTurn: true },
+				);
+			},
 			onSettled: (job) => {
 				pi.sendMessage(
 					{ customType: "pi-tiny-fork", content: resultText(job), display: true, details: job },
@@ -154,42 +239,51 @@ export default function piTinyFork(pi: ExtensionAPI): void {
 				);
 			},
 		});
-		const api = await startApi(async (request, signal) => {
-			switch (request.op) {
-				case "start": return manager.start(request);
-				case "run": return manager.run(request.argv, request);
-				case "status": return request.id === undefined ? manager.list() : manager.status(request.id);
-				case "result": return manager.result(request.id, request.wait, signal);
-				case "steer": return manager.steer(request.id, request.prompt);
-				case "stop": return manager.stop(request.id);
+
+		let api: Awaited<ReturnType<typeof startApi>> | undefined;
+		let previous: Record<string, string | undefined> | undefined;
+		if (!CHILD_PROCESS) {
+			api = await startApi(async (request: ChildRequest, signal) => {
+				switch (request.op) {
+					case "start": return manager.start(request);
+					case "run": return manager.run(request.argv, request);
+					case "status": return request.id === undefined ? manager.list() : manager.status(request.id);
+					case "result": return manager.result(request.id, request.wait, signal);
+					case "steer": return manager.steer(request.id, request.prompt);
+					case "stop": return manager.stop(request.id);
+				}
+			});
+			const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+			const executable = basename(process.execPath).replace(/\.exe$/i, "");
+			const environment: Record<string, string | undefined> = {
+				PI_CHILD_ENDPOINT: api.endpoint,
+				PI_CHILD_TOKEN: api.token,
+				PI_CHILD_RUN_ID: undefined,
+				PI_CHILD_CLI: fileURLToPath(new URL("../bin/pi-child.mjs", import.meta.url)),
+				PI_CHILD_NODE: executable === "node" || executable === "bun" ? process.execPath : "node",
+				[pathKey]: `${fileURLToPath(new URL("../bin", import.meta.url))}${delimiter}${process.env[pathKey] ?? ""}`,
+			};
+			previous = Object.fromEntries(Object.keys(environment).map((key) => [key, process.env[key]]));
+			for (const [key, value] of Object.entries(environment)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
 			}
-		});
-		const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-		const executable = basename(process.execPath).replace(/\.exe$/i, "");
-		const environment: Record<string, string | undefined> = {
-			PI_CHILD_ENDPOINT: api.endpoint,
-			PI_CHILD_TOKEN: api.token,
-			PI_CHILD_RUN_ID: undefined,
-			PI_CHILD_CLI: fileURLToPath(new URL("../bin/pi-child.mjs", import.meta.url)),
-			PI_CHILD_NODE: executable === "node" || executable === "bun" ? process.execPath : "node",
-			[pathKey]: `${fileURLToPath(new URL("../bin", import.meta.url))}${delimiter}${process.env[pathKey] ?? ""}`,
-		};
-		const previous = Object.fromEntries(Object.keys(environment).map((key) => [key, process.env[key]]));
-		for (const [key, value] of Object.entries(environment)) {
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
 		}
+
 		shutdown = async () => {
 			try {
-				await Promise.all([manager.shutdown(), api.close()]);
+				await Promise.all([manager.shutdown(), api?.close()]);
 			} finally {
-				for (const [key, value] of Object.entries(previous)) {
-					if (value === undefined) delete process.env[key];
-					else process.env[key] = value;
+				if (previous) {
+					for (const [key, value] of Object.entries(previous)) {
+						if (value === undefined) delete process.env[key];
+						else process.env[key] = value;
+					}
 				}
 			}
 		};
-		registerTools(pi, manager);
+		if (!CHILD_PROCESS) registerForkTools(pi, manager);
+		registerMonitorTools(pi, manager);
 		renderWidget(ctx, manager);
 	});
 
