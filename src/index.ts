@@ -91,7 +91,7 @@ function liveText(run: RunSnapshot, chunk: LiveChunk & { streamEnded?: boolean }
 		if (run.signal !== undefined) flags.push(`signal: ${run.signal}`);
 		flags.push(`stdout: ${run.stdoutPath}`, `stderr: ${run.stderrPath}`);
 	}
-	return `[${[run.id, ...flags].join(" · ")}]\n${chunk.text}`;
+	return `[${[run.id, ...flags].join(" · ")}]${chunk.suppressed ? "" : `\n${chunk.text}`}`;
 }
 
 function registerForkTools(pi: ExtensionAPI, manager: ForkManager): void {

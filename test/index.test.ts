@@ -227,12 +227,13 @@ describe("fork extension", () => {
 		const { pi } = await setup();
 		const options = mocks.managers[0];
 		options.onOutput({ ...mocks.runSnapshot, delivery: "live" }, {
-			text: "",
+			text: "output limit exceeded",
 			startsWithContinuation: false,
 			endsWithPartialLine: false,
 			suppressed: true,
 		});
 		const suppressed = pi.sendMessage.mock.calls[0][0].content;
+		expect(suppressed.split("output limit exceeded")).toHaveLength(2);
 		expect(suppressed).toContain("suppressed:");
 		expect(suppressed).toContain("stdout log: /tmp/stdout.log");
 
