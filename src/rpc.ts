@@ -63,6 +63,8 @@ export function piInvocation(args: string[]): { command: string; args: string[] 
 
 	const bundledCli = join(packageDir, "dist", "bundle", "cli.js");
 	if (existsSync(bundledCli)) return { command: process.execPath, args: [bundledCli, ...args] };
+	const cli = join(packageDir, "dist", "cli.js");
+	if (existsSync(cli)) return { command: process.execPath, args: [cli, ...args] };
 
 	const executable = basename(process.execPath).toLowerCase();
 	if (executable === "node" || executable === "node.exe" || executable === "bun" || executable === "bun.exe") {
