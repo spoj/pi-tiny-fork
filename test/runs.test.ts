@@ -109,11 +109,12 @@ describe("script runs through the shared extension and CLI", () => {
 			expect(await call(["result", child.id])).toMatchObject({ id: child.id, status: "completed" });
 		}
 		expect(pi.sendMessage).toHaveBeenCalledOnce();
-		expect(pi.sendMessage.mock.calls[0][0].details.id).toBe(run.id);
+		expect(pi.sendMessage.mock.calls[0][0].details).toMatchObject([{ id: run.id }]);
 		expect((await call(["status", standaloneId])).status).toBe("running");
 		await call(["steer", standaloneId, "finish"]);
 		expect((await call(["result", standaloneId, "--wait"])).status).toBe("completed");
-		expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+		expect(pi.sendMessage).toHaveBeenCalledOnce();
+		expect(pi.sendMessage.mock.calls[0][0].details).toMatchObject([{ id: run.id }, { id: standaloneId }]);
 	}, 20_000);
 
 	it("cancels a run and its waiting children without touching unrelated work or accepting late starts", async () => {
@@ -141,7 +142,7 @@ describe("script runs through the shared extension and CLI", () => {
 		expect((await call(["status", standalone.details.id])).status).toBe("running");
 		await expect(call(["start", "--task", "late", "--model", "test/fake", "--thinking", "off"], { PI_CHILD_RUN_ID: run.id })).rejects.toThrow("closed");
 		expect(pi.sendMessage).toHaveBeenCalledOnce();
-		expect(pi.sendMessage.mock.calls[0][0].details.id).toBe(run.id);
+		expect(pi.sendMessage.mock.calls[0][0].details).toMatchObject([{ id: run.id }]);
 	}, 20_000);
 
 	it("cancels children still configuring their model without letting startup revive them", async () => {
@@ -219,7 +220,7 @@ describe("script runs through the shared extension and CLI", () => {
 		expect(result.lastOutput.split("\n")[0]).toBe(`line-${firstLine}`);
 	}, 15_000);
 
-	it("reports script failure and failed executable startup once each", async () => {
+	it("batches script failure and failed executable startup without duplicates", async () => {
 		const { directory, pi, call } = await setup();
 		const run = await call(["run", "--", process.execPath, "-e", "console.log('partial'); console.error('diagnostic'); process.exit(3)"]);
 		const result = await call(["result", run.id, "--wait"]);
@@ -227,7 +228,8 @@ describe("script runs through the shared extension and CLI", () => {
 		expect(result.error).toContain("diagnostic");
 		await expect(call(["run", "--", join(directory, "missing-executable")])).rejects.toThrow("Could not start");
 		expect((await call(["status"]) as JobSnapshot[]).every((job) => job.status === "failed")).toBe(true);
-		expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+		expect(pi.sendMessage).toHaveBeenCalledOnce();
+		expect(pi.sendMessage.mock.calls[0][0].details).toMatchObject([{ id: run.id, status: "failed" }, { status: "failed" }]);
 	}, 15_000);
 
 	it.skipIf(process.platform === "win32")("settles waiters when a POSIX log is replaced by a directory", async () => {

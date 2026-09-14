@@ -9,7 +9,11 @@ The package has one `ForkManager` per Pi session. It owns two job kinds:
 - **children**: fresh `pi --mode rpc` sessions started by `Fork`;
 - **runs**: ordinary commands started by `monitor` or `pi-child run`.
 
-A run has `delivery: "aggregate" | "live"`. Aggregate delivery is the default. Live delivery sends bounded, timed stdout chunks to the owning Pi session and sends the terminal status in the final live message. A live run does not also send an aggregate completion message.
+A run has `delivery: "aggregate" | "live"`. Aggregate delivery is the default. Live delivery sends bounded, timed stdout chunks to the owning Pi session and sends the terminal status in the final live update. A live run does not also send an aggregate completion update.
+
+All ready monitor updates, standalone fork results, and aggregate run results share one pending steering message. Arrivals join that message until Pi begins delivering it; later arrivals start the next batch. This avoids draining background updates one per model response. An idle session wakes once for the pending batch. Human steering keeps its configured delivery mode; no global setting changes, extra timer, or wait for unfinished jobs.
+
+Escape discards queued delivery as usual; future updates can wake the session again after it settles. Delivered batches retain each update's run/child ID, output boundaries, and log/transcript paths.
 
 The manager keeps stdout and stderr log files for every run, without a size cap. It passes direct stdout/stderr file descriptors to the process. Live mode reads the existing stdout log file about every 100 ms; it does not use a pipe, tee, or separate drain process. Stderr is retained in its log and never produces live messages.
 
@@ -20,7 +24,7 @@ Live output is deliberately noisy-output safe:
 
 Exceeding either limit suppresses further live updates, not the command. Full output remains in the logs, and completion is still reported.
 
-The first detected stdout starts a two-second timer; later writes do not reset it. Silent periods produce no messages. Chunks are timed batches, not lines: a chunk can start in the middle of a line or end with a partial line. ANSI sequences and terminal controls are removed, preserving tabs and newlines. Normal live messages use the compact form `[run-id]` followed immediately by the sanitized chunk. Relevant boundaries add `continues previous line` or `last line incomplete` inside the header. The start response, suppression message, and final message carry log paths; suppression carries its reason and the final message carries status and exit information.
+The first detected stdout starts a two-second timer; later writes do not reset it. Silent periods produce no updates. Chunks are timed batches, not lines: a chunk can start in the middle of a line or end with a partial line. ANSI sequences and terminal controls are removed, preserving tabs and newlines. Normal live updates use the compact form `[run-id]` followed immediately by the sanitized chunk. Relevant boundaries add `continues previous line` or `last line incomplete` inside the header. The start response, suppression update, and final update carry log paths; suppression carries its reason and the final update carries status and exit information.
 
 At most eight live runs may be active in one session. Session shutdown, reload, and replacement stop owned work silently.
 
@@ -34,11 +38,11 @@ These tools are available only in the parent Pi session:
 
 `Fork` requires a self-contained task. Null `cwd` inherits the parent working directory; relative paths resolve against it. Null `model` and `thinkingLevel` independently use `defaultForkModel` and `defaultForkThinkingLevel` from `~/.pi/agent/settings.json`. Explicit values override those defaults. A model and thinking level must both resolve before startup, and model IDs must be exact `provider/model-id` values. Forks use the normal Pi settings, tools, context files, and cwd, but no parent conversation.
 
-A standalone fork sends one bounded completion message with its transcript path. Children belonging to a run stay quiet; the run owns their lifecycle and logs.
+A standalone fork contributes one bounded completion update with its transcript path to the pending batch. Children belonging to a run stay quiet; the run owns their lifecycle and logs.
 
 ## Monitor tools
 
-`monitor({ command })` is available in parent and child Pi processes. It runs the command in the current Pi cwd with Pi's configured shell, trusted project settings, and shell command prefix. It returns immediately with a run ID and log paths. Its stdout is delivered in timed live chunks, followed by one terminal live message.
+`monitor({ command })` is available in parent and child Pi processes. It runs the command in the current Pi cwd with Pi's configured shell, trusted project settings, and shell command prefix. It returns immediately with a run ID and log paths. Its stdout is delivered in timed live chunks, followed by one terminal live update.
 
 `monitor_stop({ id })` stops a run and its outstanding children. Pending stdout is flushed, but an explicit stop does not send an exit wake-up. There is no separate monitor registry or job kind; stopping is handled by the same manager used by the fork tools and CLI.
 

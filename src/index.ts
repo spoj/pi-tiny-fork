@@ -1,6 +1,6 @@
 import { basename, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, type TextContent } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
@@ -214,6 +214,30 @@ function registerMonitorTools(pi: ExtensionAPI, manager: ForkManager): void {
 
 export default function piTinyFork(pi: ExtensionAPI): void {
 	let shutdown: (() => Promise<void>) | undefined;
+	let pending: { content: TextContent[]; details: JobSnapshot[] } | undefined;
+
+	function notify(text: string, job?: JobSnapshot): void {
+		const queued = pending !== undefined;
+		pending ??= { content: [], details: [] };
+		// Pi retains these arrays until message_start; later arrivals join the same queued message.
+		pending.content.push({ type: "text", text });
+		if (job) pending.details.push(job);
+		if (!queued) {
+			pi.sendMessage(
+				{ customType: "pi-tiny-fork", ...pending, display: true },
+				{ deliverAs: "steer", triggerTurn: true },
+			);
+		}
+	}
+
+	pi.on("message_start", ({ message }) => {
+		if (message.role === "custom" && message.customType === "pi-tiny-fork" && message.content === pending?.content) {
+			pending = undefined;
+		}
+	});
+	pi.on("agent_settled", (_event, ctx) => {
+		if (ctx.isIdle()) pending = undefined;
+	});
 
 	if (!CHILD_PROCESS) {
 		pi.on("before_agent_start", (event) => ({
@@ -226,18 +250,8 @@ export default function piTinyFork(pi: ExtensionAPI): void {
 			cwd: ctx.cwd,
 			sessionDir: ctx.sessionManager.getSessionDir(),
 			onUpdate: () => renderWidget(ctx, manager),
-			onOutput: (run, chunk) => {
-				pi.sendMessage(
-					{ customType: "pi-tiny-fork", content: liveText(run, chunk), display: true },
-					{ deliverAs: "steer", triggerTurn: true },
-				);
-			},
-			onSettled: (job) => {
-				pi.sendMessage(
-					{ customType: "pi-tiny-fork", content: resultText(job), display: true, details: job },
-					{ deliverAs: "steer", triggerTurn: true },
-				);
-			},
+			onOutput: (run, chunk) => notify(liveText(run, chunk)),
+			onSettled: (job) => notify(resultText(job), job),
 		});
 
 		let api: Awaited<ReturnType<typeof startApi>> | undefined;
@@ -290,6 +304,7 @@ export default function piTinyFork(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const close = shutdown;
 		shutdown = undefined;
+		pending = undefined;
 		await close?.();
 		ctx.ui.setWidget(WIDGET_KEY, undefined);
 	});
