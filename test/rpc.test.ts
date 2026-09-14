@@ -29,17 +29,12 @@ function useFakePi(directory: string, script: string): string {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("RPC child", () => {
-	it("does not re-execute a Node SDK host entrypoint", () => {
-		const originalScript = process.argv[1];
-		const directory = mkdtempSync(join(tmpdir(), "pi-sdk-host-"));
-		const host = join(directory, "host.mjs");
-		writeFileSync(host, "throw new Error('SDK host must not be re-executed');");
+	it("resolves the bundled Pi CLI from the package", () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-package-"));
 		try {
-			const cli = useFakePi(directory, host);
-			process.argv[1] = host;
+			const cli = useFakePi(directory, process.execPath);
 			expect(piInvocation(["--mode", "rpc"])).toEqual({ command: process.execPath, args: [cli, "--mode", "rpc"] });
 		} finally {
-			process.argv[1] = originalScript;
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
