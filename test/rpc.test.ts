@@ -92,7 +92,8 @@ describe("RPC child", () => {
 		const directory = mkdtempSync(join(tmpdir(), "pi-tiny-fork-fresh-"));
 		writeFileSync(join(directory, "auth.json"), JSON.stringify({ openai: { type: "api_key", key: "test-key" } }));
 		writeFileSync(join(directory, "settings.json"), JSON.stringify({ defaultProvider: "openai", defaultModel: "gpt-5-mini", defaultThinkingLevel: "low" }));
-		const sessionFile = createForkSession(directory, join(directory, "transcripts"));
+		const parentSession = join(directory, "parent.jsonl");
+		const sessionFile = createForkSession(directory, join(directory, "transcripts"), undefined, parentSession);
 		const child = new RpcChild(directory, sessionFile, { model: "openai/gpt-5", thinkingLevel });
 		try {
 			vi.stubEnv("PI_CODING_AGENT_DIR", directory);
@@ -102,7 +103,9 @@ describe("RPC child", () => {
 				model: { provider: "openai", id: "gpt-5" }, thinkingLevel, messageCount: 0,
 			});
 			await child.stop();
-			expect(SessionManager.open(sessionFile).buildSessionContext()).toMatchObject({
+			const session = SessionManager.open(sessionFile);
+			expect(session.getHeader()?.parentSession).toBe(parentSession);
+			expect(session.buildSessionContext()).toMatchObject({
 				model: { provider: "openai", modelId: "gpt-5" }, thinkingLevel, messages: [],
 			});
 		} finally {

@@ -249,6 +249,7 @@ export default function piTinyFork(pi: ExtensionAPI): void {
 		const manager = new ForkManager({
 			cwd: ctx.cwd,
 			sessionDir: ctx.sessionManager.getSessionDir(),
+			parentSession: ctx.sessionManager.getSessionFile(),
 			onUpdate: () => renderWidget(ctx, manager),
 			onOutput: (run, chunk) => notify(liveText(run, chunk)),
 			onSettled: (job) => notify(resultText(job), job),

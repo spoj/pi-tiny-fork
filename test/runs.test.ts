@@ -46,7 +46,11 @@ async function setup() {
 	`);
 	const { default: extension } = await import("../src/index.ts");
 	const pi = { on: vi.fn(), registerTool: vi.fn(), sendMessage: vi.fn() };
-	const ctx = { cwd: directory, sessionManager: { getSessionDir: () => join(directory, "sessions") }, ui: { setWidget: vi.fn() } };
+	const ctx = {
+		cwd: directory,
+		sessionManager: { getSessionDir: () => join(directory, "sessions"), getSessionFile: () => join(directory, "parent.jsonl") },
+		ui: { setWidget: vi.fn() },
+	};
 	extension(pi as never);
 	const hook = (name: string) => pi.on.mock.calls.find(([type]) => type === name)![1];
 	const close = async () => { await hook("session_shutdown")({}, ctx); };
@@ -79,7 +83,7 @@ afterEach(async () => {
 
 describe("script runs through the shared extension and CLI", () => {
 	it("collects concurrent children from descendant scripts and notifies only once", async () => {
-		const { directory, pi, tools, call, script } = await setup();
+		const { directory, pi, tools, call, script, ctx } = await setup();
 		mkdirSync(join(directory, "workspace"));
 		const helper = script("helper", `
 			const child = await call("start", "--task", "hang review tests", "--model", "test/fake", "--thinking", "off");
@@ -103,6 +107,10 @@ describe("script runs through the shared extension and CLI", () => {
 		expect(result.status).toBe("completed");
 		expect(result.childIds).toHaveLength(2);
 		const children: ForkSnapshot[] = JSON.parse(result.lastOutput!);
+		for (const child of [standalone.details, ...children]) {
+			const header = JSON.parse(readFileSync(child.transcriptPath, "utf8").split("\n")[0]);
+			expect(header.parentSession).toBe(ctx.sessionManager.getSessionFile());
+		}
 		for (const child of children) {
 			expect(child).toMatchObject({ kind: "child", runId: run.id, cwd: join(directory, "workspace"), status: "completed", lastOutput: "review complete" });
 			expect(result.childIds).toContain(child.id);

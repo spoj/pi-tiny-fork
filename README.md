@@ -38,6 +38,8 @@ These tools are available only in the parent Pi session:
 
 `Fork` requires a self-contained task. Null `cwd` inherits the parent working directory; relative paths resolve against it. Null `model` and `thinkingLevel` independently use `defaultForkModel` and `defaultForkThinkingLevel` from `~/.pi/agent/settings.json`. Explicit values override those defaults. A model and thinking level must both resolve before startup, and model IDs must be exact `provider/model-id` values. Forks use the normal Pi settings, tools, context files, and cwd, but no parent conversation.
 
+Child session headers record the owning Pi session file as `parentSession`, preserving ancestry without copying conversation history. This applies to `Fork` and `pi-child start`, including children created inside runs. In-memory parents have no session file to link.
+
 A standalone fork contributes one bounded completion update with its transcript path to the pending batch. Children belonging to a run stay quiet; the run owns their lifecycle and logs.
 
 ## Monitor tools

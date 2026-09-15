@@ -69,6 +69,7 @@ type JobRecord = ForkRecord | RunRecord;
 type ManagerOptions = {
 	cwd: string;
 	sessionDir: string;
+	parentSession?: string;
 	onUpdate: () => void;
 	onSettled: (job: JobSnapshot) => void;
 	onOutput?: (run: RunSnapshot, chunk: LiveChunk & { streamEnded?: boolean }) => void;
@@ -132,7 +133,7 @@ export class ForkManager {
 		const id = `fork-${randomUUID()}`;
 		const fork: ForkRecord = {
 			kind: "child", id, task: options.task, cwd, runId: run?.id,
-			transcriptPath: createForkSession(cwd, this.options.sessionDir, options.task),
+			transcriptPath: createForkSession(cwd, this.options.sessionDir, options.task, this.options.parentSession),
 			launchOptions, status: "starting", turns: 0, waiters: new Set(),
 		};
 		this.jobs.set(id, fork);

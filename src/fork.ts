@@ -10,8 +10,8 @@ ${task}
 </delegated-task>`;
 }
 
-export function createForkSession(cwd: string, sessionDir?: string, name?: string): string {
-	const session = SessionManager.create(cwd, sessionDir);
+export function createForkSession(cwd: string, sessionDir?: string, name?: string, parentSession?: string): string {
+	const session = SessionManager.create(cwd, sessionDir, { parentSession });
 	if (name) session.appendSessionInfo(name);
 	const transcriptPath = resolve(session.getSessionFile()!);
 	mkdirSync(dirname(transcriptPath), { recursive: true });

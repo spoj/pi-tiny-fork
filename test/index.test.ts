@@ -93,7 +93,7 @@ async function setup() {
 		cwd: "/tmp/parent",
 		isProjectTrusted: () => true,
 		isIdle: vi.fn(() => true),
-		sessionManager: { getSessionDir: () => "/tmp/sessions" },
+		sessionManager: { getSessionDir: () => "/tmp/sessions", getSessionFile: () => "/tmp/sessions/parent.jsonl" },
 		ui: { setWidget: vi.fn() },
 	};
 	piTinyFork(pi as never);
@@ -194,7 +194,9 @@ describe("fork extension", () => {
 		expect(tools.Fork.parameters.properties).not.toHaveProperty("context");
 		expect(tools.monitor.parameters.required).toEqual(["command"]);
 		expect(tools.monitor_stop.parameters.required).toEqual(["id"]);
-		expect(mocks.managers[0]).toMatchObject({});
+		expect(mocks.managers[0]).toMatchObject({
+			cwd: "/tmp/parent", sessionDir: "/tmp/sessions", parentSession: "/tmp/sessions/parent.jsonl",
+		});
 	});
 
 	it("routes fork and API operations through the same manager", async () => {

@@ -42,10 +42,11 @@ vi.mock("../src/fork-settings.ts", async (importOriginal) => ({
 }));
 
 const cwd = join(tmpdir(), "parent");
+const parentSession = join(tmpdir(), "parent.jsonl");
 const request = { task: "work", model: "provider/test", thinkingLevel: "medium" as const };
 
 function createManager(settled: JobSnapshot[] = []) {
-	return new ForkManager({ cwd, sessionDir: join(tmpdir(), "sessions"), onUpdate: () => undefined, onSettled: (job) => settled.push(job) });
+	return new ForkManager({ cwd, sessionDir: join(tmpdir(), "sessions"), parentSession, onUpdate: () => undefined, onSettled: (job) => settled.push(job) });
 }
 
 function deferred() {
@@ -76,12 +77,13 @@ describe("fork manager", () => {
 		expect(mocks.children[0].options).toEqual({ model: "provider/explicit", thinkingLevel: "high" });
 	});
 
-	it("creates fresh sessions with the parent cwd or an explicit relative cwd", async () => {
+	it("links fresh sessions to the parent with either inherited or explicit relative cwd", async () => {
 		const manager = createManager();
 		await manager.start(request);
 		await manager.start({ ...request, cwd: "child" });
 		expect(mocks.createSession.mock.calls).toEqual([
-			[cwd, join(tmpdir(), "sessions"), "work"], [join(cwd, "child"), join(tmpdir(), "sessions"), "work"],
+			[cwd, join(tmpdir(), "sessions"), "work", parentSession],
+			[join(cwd, "child"), join(tmpdir(), "sessions"), "work", parentSession],
 		]);
 	});
 
