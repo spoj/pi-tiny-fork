@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ForkManager, type JobSnapshot, type RunSnapshot } from "../src/manager.ts";
+import { MonitorManager, type RunSnapshot } from "../src/manager.ts";
 
 type CapturedOutput = {
 	run: RunSnapshot;
@@ -17,9 +17,8 @@ type CapturedOutput = {
 
 type Harness = {
 	directory: string;
-	manager: ForkManager;
+	manager: MonitorManager;
 	outputs: CapturedOutput[];
-	settled: JobSnapshot[];
 };
 
 const harnesses: Harness[] = [];
@@ -27,15 +26,12 @@ const harnesses: Harness[] = [];
 function createHarness(): Harness {
 	const directory = mkdtempSync(join(tmpdir(), "pi-tiny-monitor-run-"));
 	const outputs: CapturedOutput[] = [];
-	const settled: JobSnapshot[] = [];
-	const manager = new ForkManager({
-		cwd: directory,
+	const manager = new MonitorManager({
 		sessionDir: join(directory, "sessions"),
 		onUpdate: () => undefined,
-		onSettled: (job) => settled.push(job),
 		onOutput: (run, chunk) => outputs.push({ run, chunk }),
 	});
-	const harness = { directory, manager, outputs, settled };
+	const harness = { directory, manager, outputs };
 	harnesses.push(harness);
 	return harness;
 }
@@ -44,12 +40,16 @@ function node(source: string): string[] {
 	return [process.execPath, "-e", source];
 }
 
-function outputsFor(outputs: CapturedOutput[], id: string): CapturedOutput[] {
-	return outputs.filter(({ run }) => run.id === id);
+function start(harness: Harness, source: string, stdin?: string): Promise<RunSnapshot> {
+	return harness.manager.run(node(source), { cwd: harness.directory, ...(stdin === undefined ? {} : { stdin }) });
 }
 
-async function finish(manager: ForkManager, id: string): Promise<RunSnapshot> {
-	return await manager.result(id, true) as RunSnapshot;
+function status(manager: MonitorManager, id: string): RunSnapshot {
+	return manager.list().find((run) => run.id === id)!;
+}
+
+function outputsFor(outputs: CapturedOutput[], id: string): CapturedOutput[] {
+	return outputs.filter(({ run }) => run.id === id);
 }
 
 async function waitFor(condition: () => boolean, timeout = 5_000): Promise<void> {
@@ -58,6 +58,11 @@ async function waitFor(condition: () => boolean, timeout = 5_000): Promise<void>
 		if (Date.now() >= deadline) throw new Error("Timed out waiting for condition");
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
+}
+
+async function finish(harness: Harness, id: string, timeout = 5_000): Promise<RunSnapshot> {
+	await waitFor(() => outputsFor(harness.outputs, id).some(({ chunk }) => chunk.streamEnded === true), timeout);
+	return status(harness.manager, id);
 }
 
 async function expectNoFile(path: string, duration = 2_200): Promise<void> {
@@ -76,49 +81,29 @@ afterEach(async () => {
 	}
 });
 
-describe("live run delivery", () => {
-	it("defaults to aggregate and keeps exact stdout and stderr logs", async () => {
-		const { manager, outputs, settled } = createHarness();
-		const stdout = `stdout-start\n${"s".repeat(60 * 1024)}stdout-tail`;
+describe("monitor runs", () => {
+	it("keeps exact stdout and stderr logs and streams stdout only", async () => {
+		const harness = createHarness();
+		const stdout = `stdout-start\n${"s".repeat(20 * 1024)}stdout-tail\n`;
 		const stderr = `stderr-start\n${"e".repeat(60 * 1024)}stderr-tail`;
-		const source = `process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(${JSON.stringify(stderr)});`;
+		const started = await start(harness, `process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(${JSON.stringify(stderr)});`);
+		expect(started).toMatchObject({ status: "running" });
+		const result = await finish(harness, started.id);
+		const chunks = outputsFor(harness.outputs, started.id);
 
-		const started = await manager.run(node(source));
-		expect(started).toMatchObject({ kind: "run", delivery: "aggregate", status: "running" });
-		const result = await finish(manager, started.id);
-
-		expect(result).toMatchObject({ kind: "run", delivery: "aggregate", status: "completed", exitCode: 0, outputTruncated: true });
+		expect(result).toMatchObject({ status: "completed", exitCode: 0 });
 		expect(readFileSync(result.stdoutPath)).toEqual(Buffer.from(stdout));
 		expect(readFileSync(result.stderrPath)).toEqual(Buffer.from(stderr));
-		expect(result.lastOutput).toContain("stdout-tail");
-		expect(outputs).toEqual([]);
-		expect(settled).toHaveLength(1);
-	});
-
-	it("delivers stdout only and includes the natural exit status", async () => {
-		const { manager, outputs, settled } = createHarness();
-		const started = await manager.run(node([
-			"process.stdout.write('stdout\\n');",
-			"process.stderr.write('stderr\\n');",
-		].join(" ")), { delivery: "live" });
-		const result = await finish(manager, started.id);
-		const chunks = outputsFor(outputs, started.id);
-
-		expect(result).toMatchObject({ kind: "run", delivery: "live", status: "completed", exitCode: 0 });
-		expect(chunks.length).toBeGreaterThan(0);
-		expect(chunks.map(({ chunk }) => chunk.text).join("")).toContain("stdout\n");
-		expect(chunks.map(({ chunk }) => chunk.text).join("")).not.toContain("stderr");
-		expect(chunks.some(({ chunk }) => chunk.streamEnded === true)).toBe(true);
-		expect(settled).toEqual([]);
+		expect(chunks.map(({ chunk }) => chunk.text).join("")).toBe(stdout);
+		expect(chunks.at(-1)!.run).toMatchObject({ status: "completed", exitCode: 0 });
 	});
 
 	it("wakes a silent natural exit with a final status chunk", async () => {
-		const { manager, outputs, settled } = createHarness();
-		const started = await manager.run(node("process.exit(0);"), { delivery: "live" });
-		const result = await finish(manager, started.id);
-		const chunks = outputsFor(outputs, started.id);
+		const harness = createHarness();
+		const started = await start(harness, "process.exit(0);");
+		await finish(harness, started.id);
+		const chunks = outputsFor(harness.outputs, started.id);
 
-		expect(result).toMatchObject({ kind: "run", delivery: "live", status: "completed", exitCode: 0 });
 		expect(chunks).toHaveLength(1);
 		expect(chunks[0].chunk).toMatchObject({
 			text: "",
@@ -126,41 +111,35 @@ describe("live run delivery", () => {
 			endsWithPartialLine: false,
 			streamEnded: true,
 		});
-		expect(chunks[0].run).toMatchObject({ id: started.id, status: "completed", delivery: "live", exitCode: 0 });
-		expect(settled).toEqual([]);
+		expect(chunks[0].run).toMatchObject({ id: started.id, status: "completed", exitCode: 0 });
 	});
 
-	it.skipIf(process.platform === "win32")("reports a signal in the final live status", async () => {
-		const { manager, outputs, settled } = createHarness();
-		const started = await manager.run(node("process.kill(process.pid, 'SIGTERM');"), { delivery: "live" });
-		const result = await finish(manager, started.id);
-		const chunks = outputsFor(outputs, started.id);
+	it.skipIf(process.platform === "win32")("reports a signal in the final status", async () => {
+		const harness = createHarness();
+		const started = await start(harness, "process.kill(process.pid, 'SIGTERM');");
+		const result = await finish(harness, started.id);
+		const chunks = outputsFor(harness.outputs, started.id);
 
-		expect(result).toMatchObject({ kind: "run", delivery: "live", status: "failed", signal: "SIGTERM" });
+		expect(result).toMatchObject({ status: "failed", signal: "SIGTERM" });
 		expect(result.exitCode).toBeUndefined();
 		expect(chunks).toHaveLength(1);
 		expect(chunks[0].run).toMatchObject({ status: "failed", signal: "SIGTERM" });
-		expect(chunks[0].chunk.streamEnded).toBe(true);
-		expect(settled).toEqual([]);
 	});
 
 	it("keeps partial UTF-8 text and continuation flags across timed chunks", async () => {
-		const { manager, outputs, settled } = createHarness();
-		const source = [
+		const harness = createHarness();
+		const started = await start(harness, [
 			"const first = Buffer.from('α\\nβ');",
 			"process.stdout.write(first.subarray(0, 1));",
 			"setTimeout(() => process.stdout.write(first.subarray(1)), 20);",
 			"setTimeout(() => process.stdout.write('γ'), 1000);",
 			"setTimeout(() => process.stdout.write('終\\n'), 2300);",
 			"setTimeout(() => {}, 50);",
-		].join(" ");
-		const started = await manager.run(node(source), { delivery: "live" });
+		].join(" "));
+		const result = await finish(harness, started.id, 6_000);
+		const chunks = outputsFor(harness.outputs, started.id);
 
-		await waitFor(() => outputsFor(outputs, started.id).some(({ chunk }) => chunk.streamEnded === true), 6_000);
-		const result = await finish(manager, started.id);
-		const chunks = outputsFor(outputs, started.id);
-
-		expect(result).toMatchObject({ delivery: "live", status: "completed", exitCode: 0 });
+		expect(result).toMatchObject({ status: "completed", exitCode: 0 });
 		expect(chunks).toHaveLength(2);
 		expect(chunks[0].chunk).toMatchObject({
 			text: "α\nβγ",
@@ -174,42 +153,35 @@ describe("live run delivery", () => {
 			endsWithPartialLine: false,
 			streamEnded: true,
 		});
-		expect(chunks[1].run).toMatchObject({ status: "completed", exitCode: 0 });
-		expect(chunks.map(({ chunk }) => chunk.text).join("")).toBe("α\nβγ終\n");
-		expect(settled).toEqual([]);
 	}, 10_000);
 
-	it("does not cap one logical line across live batches", async () => {
-		const { manager, outputs, settled } = createHarness();
+	it("does not cap one logical line across batches", async () => {
+		const harness = createHarness();
 		const first = "a".repeat(32 * 1024);
 		const second = `${"b".repeat(32 * 1024 + 1)}\n`;
-		const source = `process.stdout.write(${JSON.stringify(first)}); setTimeout(() => process.stdout.write(${JSON.stringify(second)}), 2500);`;
-		const started = await manager.run(node(source), { delivery: "live" });
-		const result = await finish(manager, started.id);
-		const chunks = outputsFor(outputs, started.id);
+		const started = await start(harness, `process.stdout.write(${JSON.stringify(first)}); setTimeout(() => process.stdout.write(${JSON.stringify(second)}), 2500);`);
+		const result = await finish(harness, started.id, 10_000);
+		const chunks = outputsFor(harness.outputs, started.id);
 
-		expect(result).toMatchObject({ delivery: "live", status: "completed", exitCode: 0 });
 		expect(readFileSync(result.stdoutPath, "utf8")).toBe(first + second);
 		expect(chunks.some(({ chunk }) => chunk.suppressed === true)).toBe(false);
 		expect(chunks.map(({ chunk }) => chunk.text).join("")).toBe(first + second);
-		expect(settled).toEqual([]);
 	}, 15_000);
 
 	it("flushes pending output on stop without an exit wake", async () => {
-		const { directory, manager, outputs, settled } = createHarness();
-		const ready = join(directory, "pending-ready");
-		const source = [
+		const harness = createHarness();
+		const ready = join(harness.directory, "pending-ready");
+		const started = await start(harness, [
 			"const fs = require('node:fs');",
 			`process.stdout.write('pending', () => fs.writeFileSync(${JSON.stringify(ready)}, 'ready'));`,
 			"setInterval(() => {}, 1000);",
-		].join(" ");
-		const started = await manager.run(node(source), { delivery: "live" });
+		].join(" "));
 		await waitFor(() => existsSync(ready));
 		await new Promise((resolve) => setImmediate(resolve));
 
-		const stopped = await manager.stop(started.id) as RunSnapshot;
-		const chunks = outputsFor(outputs, started.id);
-		expect(stopped).toMatchObject({ kind: "run", delivery: "live", status: "stopped" });
+		const stopped = await harness.manager.stop(started.id);
+		const chunks = outputsFor(harness.outputs, started.id);
+		expect(stopped).toMatchObject({ status: "stopped" });
 		expect(chunks).toHaveLength(1);
 		expect(chunks[0].chunk).toMatchObject({
 			text: "pending",
@@ -217,25 +189,24 @@ describe("live run delivery", () => {
 			endsWithPartialLine: true,
 		});
 		expect(chunks[0].chunk.streamEnded).not.toBe(true);
-		expect(settled).toEqual([]);
+		await expect(harness.manager.stop(started.id)).rejects.toThrow("not running");
+		await expect(harness.manager.stop("run-unknown")).rejects.toThrow("Unknown monitor");
 	});
 
-	it("stays silent while shutting down live runs", async () => {
-		const { directory, manager, outputs, settled } = createHarness();
-		const ready = join(directory, "shutdown-ready");
-		const source = [
+	it("stays silent while shutting down", async () => {
+		const harness = createHarness();
+		const ready = join(harness.directory, "shutdown-ready");
+		const started = await start(harness, [
 			"const fs = require('node:fs');",
 			`process.stdout.write('pending', () => fs.writeFileSync(${JSON.stringify(ready)}, 'ready'));`,
 			"setInterval(() => {}, 1000);",
-		].join(" ");
-		const started = await manager.run(node(source), { delivery: "live" });
+		].join(" "));
 		await waitFor(() => existsSync(ready));
 		await new Promise((resolve) => setImmediate(resolve));
 
-		await manager.shutdown();
-		expect(manager.status(started.id)).toMatchObject({ status: "stopped", delivery: "live" });
-		expect(outputs).toEqual([]);
-		expect(settled).toEqual([]);
+		await harness.manager.shutdown();
+		expect(status(harness.manager, started.id)).toMatchObject({ status: "stopped" });
+		expect(harness.outputs).toEqual([]);
 	});
 
 	it.each([
@@ -248,78 +219,71 @@ describe("live run delivery", () => {
 			noise: "LINE-NOISE\n".repeat(501),
 		},
 	])("suppresses $name without killing the command", async ({ noise }) => {
-		const { directory, manager, outputs, settled } = createHarness();
-		const ready = join(directory, "noise-ready");
-		const finished = join(directory, "noise-finished");
-		const source = [
+		const harness = createHarness();
+		const ready = join(harness.directory, "noise-ready");
+		const finished = join(harness.directory, "noise-finished");
+		const started = await start(harness, [
 			"const fs = require('node:fs');",
 			`const noise = ${JSON.stringify(noise)};`,
 			`process.stdout.write(noise, () => { fs.writeFileSync(${JSON.stringify(ready)}, 'ready'); setTimeout(() => { process.stderr.write('stderr-after\\n'); process.stdout.write('after-noise\\n', () => fs.writeFileSync(${JSON.stringify(finished)}, 'finished')); }, 2000); });`,
-		].join(" ");
-		const started = await manager.run(node(source), { delivery: "live" });
+		].join(" "));
 
 		await waitFor(() => existsSync(ready));
-		await waitFor(() => outputsFor(outputs, started.id).some(({ chunk }) => chunk.suppressed === true), 6_000);
-		expect(manager.status(started.id)).toMatchObject({ status: "running", delivery: "live" });
-		const result = await finish(manager, started.id);
-		const chunks = outputsFor(outputs, started.id);
+		await waitFor(() => outputsFor(harness.outputs, started.id).some(({ chunk }) => chunk.suppressed === true), 6_000);
+		expect(status(harness.manager, started.id)).toMatchObject({ status: "running" });
+		const result = await finish(harness, started.id);
+		const chunks = outputsFor(harness.outputs, started.id);
 
-		expect(result).toMatchObject({ kind: "run", delivery: "live", status: "completed", exitCode: 0 });
+		expect(result).toMatchObject({ status: "completed", exitCode: 0 });
 		expect(existsSync(finished)).toBe(true);
 		expect(readFileSync(result.stdoutPath, "utf8")).toBe(`${noise}after-noise\n`);
 		expect(readFileSync(result.stderrPath, "utf8")).toBe("stderr-after\n");
-		expect(chunks.some(({ chunk }) => chunk.suppressed === true)).toBe(true);
 		expect(chunks.map(({ chunk }) => chunk.text).join("")).not.toContain("RAW-NOISE");
 		expect(chunks.map(({ chunk }) => chunk.text).join("")).not.toContain("LINE-NOISE");
-		expect(settled).toEqual([]);
 	}, 15_000);
 
-	it("allows eight active live runs and rejects the ninth", async () => {
-		const { manager } = createHarness();
-		const argv = node("setInterval(() => {}, 1000);");
-		const runs = await Promise.all(Array.from({ length: 8 }, () => manager.run(argv, { delivery: "live" })));
+	it("allows eight active monitors and rejects the ninth", async () => {
+		const harness = createHarness();
+		const runs = await Promise.all(Array.from({ length: 8 }, () => start(harness, "setInterval(() => {}, 1000);")));
 
 		expect(runs).toHaveLength(8);
-		expect(manager.list().filter((job) => job.kind === "run" && job.delivery === "live" && (job.status === "starting" || job.status === "running"))).toHaveLength(8);
-		await expect(manager.run(argv, { delivery: "live" })).rejects.toThrow(/8/);
+		expect(harness.manager.list().filter((run) => run.status === "running")).toHaveLength(8);
+		await expect(start(harness, "setInterval(() => {}, 1000);")).rejects.toThrow(/8/);
 	});
 
-	it.skipIf(process.platform === "win32")("kills descendants during live-run shutdown", async () => {
-		const { directory, manager } = createHarness();
-		const childReady = join(directory, "descendant-ready");
-		const leaked = join(directory, "descendant-leaked");
+	it.skipIf(process.platform === "win32")("kills descendants during shutdown", async () => {
+		const harness = createHarness();
+		const childReady = join(harness.directory, "descendant-ready");
+		const leaked = join(harness.directory, "descendant-leaked");
 		const child = [
 			"const fs = require('node:fs');",
 			`fs.writeFileSync(${JSON.stringify(childReady)}, 'ready');`,
 			"process.on('SIGTERM', () => {});",
 			`setTimeout(() => fs.writeFileSync(${JSON.stringify(leaked)}, 'leaked'), 1500);`,
 		].join(" ");
-		const source = [
+		await start(harness, [
 			"const { spawn } = require('node:child_process');",
 			`spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { stdio: 'inherit' }).unref();`,
 			"setInterval(() => {}, 1000);",
-		].join(" ");
-		await manager.run(node(source), { delivery: "live" });
+		].join(" "));
 		await waitFor(() => existsSync(childReady));
 
-		await manager.shutdown();
+		await harness.manager.shutdown();
 		await expectNoFile(leaked);
 	}, 10_000);
 
-	it("passes stdin to an aggregate run and closes the stream", async () => {
-		const { manager, outputs } = createHarness();
+	it("passes stdin and closes the stream", async () => {
+		const harness = createHarness();
 		const input = "stdin α終\n";
-		const source = [
+		const started = await start(harness, [
 			"process.stdin.setEncoding('utf8');",
 			"let input = '';",
 			"process.stdin.on('data', chunk => input += chunk);",
 			"process.stdin.on('end', () => process.stdout.write(input));",
-		].join(" ");
-		const started = await manager.run(node(source), { stdin: input });
-		const result = await finish(manager, started.id);
+		].join(" "), input);
+		const result = await finish(harness, started.id);
 
-		expect(result).toMatchObject({ kind: "run", delivery: "aggregate", status: "completed", exitCode: 0 });
+		expect(result).toMatchObject({ status: "completed", exitCode: 0 });
 		expect(readFileSync(result.stdoutPath, "utf8")).toBe(input);
-		expect(outputs).toEqual([]);
 	});
 });

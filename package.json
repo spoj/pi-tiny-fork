@@ -1,20 +1,20 @@
 {
   "name": "pi-tiny-fork",
   "version": "0.1.0",
-  "description": "Fresh Pi child sessions and tracked script runs",
+  "description": "Background monitored commands and parent-linked child Pi sessions",
   "type": "module",
   "keywords": ["pi-package"],
   "license": "MIT",
-  "files": ["README.md", "extensions", "src", "bin", "examples"],
+  "files": ["README.md", "extensions", "src", "bin"],
   "bin": {
-    "pi-child": "./bin/pi-child.mjs"
+    "pi-sub": "./bin/pi-sub"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/spoj/pi-tiny-fork.git"
   },
   "pi": {
-    "extensions": ["./extensions/fork.ts", "./extensions/replay.ts"]
+    "extensions": ["./extensions/monitor.ts", "./extensions/replay.ts"]
   },
   "scripts": {
     "test": "vitest run",
