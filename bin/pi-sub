@@ -1,9 +1,0 @@
-#!/bin/sh
-# Runs pi with the calling Pi session recorded as parentSession.
-[ -n "$PI_SESSION_FILE" ] || exec pi "$@"
-id=$(uuidgen | tr A-Z a-z)
-ts=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
-file="$(dirname "$PI_SESSION_FILE")/$(echo "$ts" | tr :. --)_$id.jsonl"
-printf '{"type":"session","version":3,"id":"%s","timestamp":"%s","cwd":"%s","parentSession":"%s"}\n' \
-	"$id" "$ts" "$PWD" "$PI_SESSION_FILE" > "$file"
-exec pi --session "$file" "$@"
